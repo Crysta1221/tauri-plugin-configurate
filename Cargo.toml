@@ -5,6 +5,12 @@ authors = ["Crysta1221"]
 description = "A Tauri v2 plugin for type-safe application configuration management."
 edition = "2021"
 rust-version = "1.77.2"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Crysta1221/tauri-plugin-configurate"
+homepage = "https://github.com/Crysta1221/tauri-plugin-configurate"
+keywords = ["tauri", "tauri-plugin", "config", "keyring", "configuration"]
+categories = ["config", "filesystem"]
 exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
 links = "tauri-plugin-configurate"
 
