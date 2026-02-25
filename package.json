@@ -1,0 +1,41 @@
+{
+  "name": "tauri-plugin-configurate-api",
+  "version": "0.1.0",
+  "description": "",
+  "author": "You",
+  "files": [
+    "dist-js",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist-js/index.cjs",
+  "module": "./dist-js/index.js",
+  "types": "./dist-js/index.d.ts",
+  "exports": {
+    "types": "./dist-js/index.d.ts",
+    "import": "./dist-js/index.js",
+    "require": "./dist-js/index.cjs"
+  },
+  "scripts": {
+    "build": "rollup -c",
+    "build:sync": "rollup -c && cd examples/tauri-app && pnpm install",
+    "prepublishOnly": "bun build",
+    "pretest": "pnpm build",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "lint": "oxlint --type-aware",
+    "lint:fix": "oxlint --type-aware --fix"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "oxlint-tsgolint": "^0.14.2"
+  },
+  "devDependencies": {
+    "@rollup/plugin-typescript": "^12.0.0",
+    "oxfmt": "^0.35.0",
+    "oxlint": "^1.50.0",
+    "rollup": "^4.9.6",
+    "tslib": "^2.6.2",
+    "typescript": "^5.3.3"
+  }
+}

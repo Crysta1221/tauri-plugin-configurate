@@ -1,0 +1,19 @@
+{
+  "globals": {
+    "$state": "readonly"
+  },
+  "rules": {
+    "no-unused-vars": "error",
+    "no-undef": "error",
+    "eqeqeq": "error",
+    "no-console": "warn",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "warn",
+    "typescript/consistent-type-imports": "error"
+  },
+  "env": {
+    "browser": true,
+    "es2021": true
+  },
+  "extends": ["node_modules/**"]
+}

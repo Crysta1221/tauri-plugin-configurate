@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "enables the default permissions",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "configurate:allow-create",
+    "configurate:allow-load",
+    "configurate:allow-save",
+    "configurate:allow-delete"
+  ]
+}
