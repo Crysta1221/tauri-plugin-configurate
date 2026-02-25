@@ -21,7 +21,7 @@ Add the plugin to `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-configurate = { path = "/path/to/tauri-plugin-configurate" }
+tauri-plugin-configurate = "0.1.0"
 ```
 
 Register it in `src-tauri/src/lib.rs`:
