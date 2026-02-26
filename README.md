@@ -133,7 +133,7 @@ const movedConfig = factory.build(appSchema, { name: "app.json", dirName: "my-ap
 const fullConfig = factory.build(appSchema, { name: "app.json", dirName: "my-app", path: "config" });
 
 // Third-argument shorthand — overrides factory-level dirName (string form only)
-const specialConfig = factory.build(specialSchema, "special.json", "other-dir");
+const specialConfig = factory.build(appSchema, "special.json", "other-dir");
 ```
 
 #### Path layout
@@ -259,7 +259,7 @@ const deepConfig = factory.build(cacheSchema, { name: "cache.json", path: "archi
 const otherConfig = factory.build(appSchema, { name: "app.json", dirName: "other-app" }); // → %APPDATA%/other-app/app.json
 
 // Third-argument shorthand (string form only)
-const legacyConfig = factory.build(legacySchema, "legacy.json", "old-app"); // → %APPDATA%/old-app/legacy.json
+const legacyConfig = factory.build(appSchema, "legacy.json", "old-app"); // → %APPDATA%/old-app/legacy.json
 
 // Each instance is a full Configurate — all operations are available
 const app = await appConfig.load().run();
