@@ -2,23 +2,23 @@
   "name": "tauri-plugin-configurate-api",
   "version": "0.1.0",
   "description": "A Tauri v2 plugin for type-safe application configuration management.",
-  "author": "Crysta1221",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Crysta1221/tauri-plugin-configurate.git"
-  },
+  "keywords": [
+    "config",
+    "configuration",
+    "keyring",
+    "tauri",
+    "tauri-plugin"
+  ],
   "homepage": "https://github.com/Crysta1221/tauri-plugin-configurate",
   "bugs": {
     "url": "https://github.com/Crysta1221/tauri-plugin-configurate/issues"
   },
-  "keywords": [
-    "tauri",
-    "tauri-plugin",
-    "config",
-    "keyring",
-    "configuration"
-  ],
+  "license": "MIT",
+  "author": "Crysta1221",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Crysta1221/tauri-plugin-configurate.git"
+  },
   "files": [
     "dist-js",
     "README.md",
@@ -43,9 +43,6 @@
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix"
   },
-  "peerDependencies": {
-    "@tauri-apps/api": "^2.0.0"
-  },
   "dependencies": {
     "oxlint-tsgolint": "^0.15.0"
   },
@@ -56,5 +53,8 @@
     "rollup": "^4.9.6",
     "tslib": "^2.6.2",
     "typescript": "^5.3.3"
+  },
+  "peerDependencies": {
+    "@tauri-apps/api": "^2.0.0"
   }
 }
