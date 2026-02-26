@@ -567,11 +567,20 @@ export class Configurate<S extends SchemaObject> {
         'Configurate: "name" must be a single filename and cannot contain path separators.',
       );
     }
-    if (opts.dirName !== undefined && opts.dirName.length === 0) {
-      throw new Error('Configurate: "dirName" must not be an empty string.');
+    if (opts.name === "." || opts.name === "..") {
+      throw new Error('Configurate: "name" must not be "." or "..".');
     }
-    if (opts.path !== undefined && opts.path.length === 0) {
-      throw new Error('Configurate: "path" must not be an empty string.');
+    if (opts.dirName !== undefined) {
+      const dirNameSegments = opts.dirName.split(/[/\\]/);
+      if (dirNameSegments.some((seg) => seg === "" || seg === "." || seg === "..")) {
+        throw new Error('Configurate: "dirName" must not contain empty or special segments.');
+      }
+    }
+    if (opts.path !== undefined) {
+      const pathSegments = opts.path.split(/[/\\]/);
+      if (pathSegments.some((seg) => seg === "" || seg === "." || seg === "..")) {
+        throw new Error('Configurate: "path" must not contain empty or special segments.');
+      }
     }
     this._schema = schema as unknown as S;
     this._opts = opts;
