@@ -67,9 +67,6 @@ pub trait StorageBackend {
 
     /// Serializes `value` and writes it to `path`, creating the file if necessary.
     fn write(&self, path: &Path, value: &Value) -> Result<()>;
-
-    /// Returns the canonical file extension for this backend (without leading dot).
-    fn extension(&self) -> &'static str;
 }
 
 /// JSON storage backend using `serde_json`.
@@ -85,10 +82,6 @@ impl StorageBackend for JsonBackend {
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(value)?;
         write_file_safely(path, &bytes)
-    }
-
-    fn extension(&self) -> &'static str {
-        "json"
     }
 }
 
@@ -112,10 +105,6 @@ impl StorageBackend for YamlBackend {
         let bytes =
             serde_yaml::to_string(&yaml_val).map_err(|e| Error::Storage(e.to_string()))?;
         write_file_safely(path, bytes.as_bytes())
-    }
-
-    fn extension(&self) -> &'static str {
-        "yaml"
     }
 }
 
@@ -141,10 +130,6 @@ impl StorageBackend for BinaryBackend {
         let bytes =
             bincode::serialize(&json_bytes).map_err(|e| Error::Storage(e.to_string()))?;
         write_file_safely(path, &bytes)
-    }
-
-    fn extension(&self) -> &'static str {
-        "bin"
     }
 }
 
@@ -217,10 +202,6 @@ impl StorageBackend for BinaryEncryptedBackend {
         output.extend_from_slice(&ciphertext);
 
         write_file_safely(path, &output)
-    }
-
-    fn extension(&self) -> &'static str {
-        "binc"
     }
 }
 
@@ -305,11 +286,6 @@ mod tests {
         let data = json!({"secret": "value"});
         writer.write(&path, &data).unwrap();
         assert!(reader.read(&path).is_err());
-    }
-
-    #[test]
-    fn encrypted_extension_is_binc() {
-        assert_eq!(BinaryEncryptedBackend::new("k").extension(), "binc");
     }
 
     #[test]
