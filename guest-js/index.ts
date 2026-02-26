@@ -832,12 +832,17 @@ export class ConfigurateFactory {
    */
   build<S extends SchemaObject>(
     schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-    name: string,
+    nameOrConfig: string | BuildConfig,
     dirName?: string,
   ): Configurate<S>;
   build<S extends SchemaObject>(
     schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
     config: BuildConfig,
+  ): Configurate<S>;
+  build<S extends SchemaObject>(
+    schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
+    name: string,
+    dirName?: string,
   ): Configurate<S>;
   build<S extends SchemaObject>(
     schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
