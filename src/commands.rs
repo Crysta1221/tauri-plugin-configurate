@@ -41,6 +41,12 @@ or Windows-forbidden characters (: * ? \" < > | and null bytes)",
             component
         )));
     }
+    if component.ends_with(' ') || component.ends_with('.') {
+        return Err(Error::InvalidPayload(format!(
+            "invalid path component '{}': must not end with a space or dot",
+            component
+        )));
+    }
     Ok(())
 }
 
