@@ -11,37 +11,75 @@ use crate::storage;
 
 /// Validates a single path component (file or folder name segment).
 ///
-/// Leading dots are allowed so that names like `.env` are accepted.
-/// Blocked: empty, `.`, `..`, and all Windows-forbidden characters
-/// (`/ \ : * ? " < > |` and null bytes).
+/// Leading dots are allowed so that names like `.env` or `.example` are accepted.
+/// Blocked in a single pass:
+/// - empty string
+/// - all-dots strings (`.`, `..`, `...`, etc.)
+/// - any Windows-forbidden character: `/ \ \0 : * ? " < > |`
 fn validate_path_component(component: &str) -> Result<()> {
-    if component.is_empty()
-        || component == "."
-        || component == ".."
-        || component.chars().any(|c| matches!(c, '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
-    {
+    if component.is_empty() {
+        return Err(Error::InvalidPayload(
+            "invalid path component: must not be empty".to_string(),
+        ));
+    }
+    let mut all_dots = true;
+    for c in component.chars() {
+        if matches!(c, '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            return Err(Error::InvalidPayload(format!(
+                "invalid path component '{}': must not contain path separators \
+or Windows-forbidden characters (: * ? \" < > | and null bytes)",
+                component
+            )));
+        }
+        if c != '.' {
+            all_dots = false;
+        }
+    }
+    if all_dots {
         return Err(Error::InvalidPayload(format!(
-            "invalid path component '{}': must not be empty, '.' or '..', \
-and must not contain path separators or Windows-forbidden characters (: * ? \" < > |)",
+            "invalid path component '{}': dot-only names (., .., ...) are not allowed",
+            component
+        )));
+    }
+    if component.ends_with(' ') || component.ends_with('.') {
+        return Err(Error::InvalidPayload(format!(
+            "invalid path component '{}': must not end with a space or dot",
             component
         )));
     }
     Ok(())
 }
 
-/// Validates that a config `id` is a safe single filename component.
-fn validate_config_id(id: &str) -> Result<()> {
-    validate_path_component(id)
+/// Validates that a config `name` is a safe single filename component.
+///
+/// `name` must be a single path component — path separators (`/`, `\`) are rejected.
+/// Include the extension in the name (e.g. `"app.json"`, `".env"`, `"data.yaml"`).
+fn validate_config_name(name: &str) -> Result<()> {
+    validate_path_component(name)
 }
 
-/// Validates a `sub_dir` value (forward-slash-separated relative path).
+/// Validates a `dir_name` value (forward-slash-separated relative path).
 ///
-/// Each segment is validated with `validate_path_component`.
-fn validate_sub_dir(sub_dir: &str) -> Result<()> {
-    if sub_dir.is_empty() {
-        return Err(Error::InvalidPayload("subDir must not be empty".to_string()));
+/// `dir_name` replaces the app identifier component of the base path.
+/// Each slash-separated segment is validated with `validate_path_component`.
+fn validate_dir_name(dir_name: &str) -> Result<()> {
+    if dir_name.is_empty() {
+        return Err(Error::InvalidPayload("dirName must not be empty".to_string()));
     }
-    for component in sub_dir.split('/') {
+    for component in dir_name.split('/') {
+        validate_path_component(component)?;
+    }
+    Ok(())
+}
+
+/// Validates a `path` value (forward-slash-separated relative sub-path within root).
+///
+/// Each slash-separated segment is validated with `validate_path_component`.
+fn validate_path_field(path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(Error::InvalidPayload("path must not be empty".to_string()));
+    }
+    for component in path.split('/') {
         validate_path_component(component)?;
     }
     Ok(())
@@ -50,31 +88,75 @@ fn validate_sub_dir(sub_dir: &str) -> Result<()> {
 /// Resolves the absolute path for a config file using Tauri's path resolver.
 ///
 /// `dir` is Tauri's `BaseDirectory` (deserialized from the TypeScript integer value).
-/// When `sub_dir` is provided it is appended as a relative sub-directory path
-/// between the base directory and the config filename.
+///
+/// When `dir_name` is provided and the resolved base path ends with the app
+/// identifier (e.g. `AppConfig` → `%APPDATA%/<identifier>`), the identifier
+/// segment is **replaced** by `dir_name`.  For base directories that do not
+/// include the identifier (e.g. `Desktop`, `Home`), `dir_name` is appended as
+/// a sub-directory instead.
+///
+/// # Path layout (AppConfig, identifier `com.example.app`)
+///
+/// | `dir_name`  | `path`      | Resolved path                                              |
+/// | ----------- | ----------- | ---------------------------------------------------------- |
+/// | _(absent)_  | _(absent)_  | `%APPDATA%/com.example.app/<name>`                         |
+/// | `"my-app"`  | _(absent)_  | `%APPDATA%/my-app/<name>`                                  |
+/// | _(absent)_  | `"cfg/v2"`  | `%APPDATA%/com.example.app/cfg/v2/<name>`                  |
+/// | `"my-app"`  | `"cfg/v2"`  | `%APPDATA%/my-app/cfg/v2/<name>`                           |
+///
+/// # Path layout (Desktop — no identifier)
+///
+/// | `dir_name`  | `path`      | Resolved path                                              |
+/// | ----------- | ----------- | ---------------------------------------------------------- |
+/// | _(absent)_  | _(absent)_  | `~/Desktop/<name>`                                         |
+/// | `"my-app"`  | _(absent)_  | `~/Desktop/my-app/<name>`                                  |
+///
+/// `name` is used as-is (caller includes the extension, e.g. `"app.json"` or `".env"`).
+/// No extension is appended automatically.
 fn resolve_path<R: Runtime>(
     app: &AppHandle<R>,
     dir: BaseDirectory,
-    id: &str,
-    ext: &str,
-    sub_dir: Option<&str>,
+    name: &str,
+    dir_name: Option<&str>,
+    path: Option<&str>,
 ) -> Result<PathBuf> {
-    validate_config_id(id)?;
-    if let Some(sub) = sub_dir {
-        validate_sub_dir(sub)?;
+    validate_config_name(name)?;
+    if let Some(d) = dir_name {
+        validate_dir_name(d)?;
     }
-    // `resolve("", dir)` returns the base directory itself; the config filename
-    // (and optional sub-directory) are then appended so all BaseDirectory
-    // variants are handled uniformly through Tauri's official path resolver.
+    if let Some(p) = path {
+        validate_path_field(p)?;
+    }
+
     let base = app
         .path()
         .resolve("", dir)
         .map_err(|e| Error::Storage(e.to_string()))?;
-    let parent = match sub_dir {
-        Some(sub) => base.join(sub),
+
+    // When `dir_name` is provided and the resolved base path ends with the app
+    // identifier (e.g. `%APPDATA%/com.example.app`), replace that last segment.
+    // For directories without an identifier (e.g. Desktop, Home) `dir_name` is
+    // simply appended as a sub-directory.
+    let root = match dir_name {
+        Some(d) => {
+            let identifier = &app.config().identifier;
+            if base.file_name().map_or(false, |n| n == identifier.as_str()) {
+                base.parent().unwrap_or(&base).join(d)
+            } else {
+                base.join(d)
+            }
+        }
         None => base,
     };
-    Ok(parent.join(format!("{}.{}", id, ext)))
+
+    // path adds a sub-directory within the root.
+    let parent = match path {
+        Some(p) => root.join(p),
+        None => root,
+    };
+
+    // name is used as-is — no extension is appended.
+    Ok(parent.join(name))
 }
 
 /// Writes keyring entries to the OS keyring and nullifies the corresponding
@@ -141,7 +223,7 @@ pub(crate) async fn create<R: Runtime>(
     payload: ConfiguratePayload,
 ) -> Result<Value> {
     let backend = storage::backend_for(&payload.format, payload.encryption_key.as_deref());
-    let path = resolve_path(&app, payload.dir, &payload.id, backend.extension(), payload.sub_dir.as_deref())?;
+    let path = resolve_path(&app, payload.dir, &payload.name, payload.dir_name.as_deref(), payload.path.as_deref())?;
 
     let mut data = payload.data.unwrap_or(Value::Object(serde_json::Map::new()));
 
@@ -170,7 +252,7 @@ pub(crate) async fn load<R: Runtime>(
     payload: ConfiguratePayload,
 ) -> Result<Value> {
     let backend = storage::backend_for(&payload.format, payload.encryption_key.as_deref());
-    let path = resolve_path(&app, payload.dir, &payload.id, backend.extension(), payload.sub_dir.as_deref())?;
+    let path = resolve_path(&app, payload.dir, &payload.name, payload.dir_name.as_deref(), payload.path.as_deref())?;
 
     let mut data = backend.read(&path)?;
 
@@ -193,7 +275,7 @@ pub(crate) async fn save<R: Runtime>(
     payload: ConfiguratePayload,
 ) -> Result<Value> {
     let backend = storage::backend_for(&payload.format, payload.encryption_key.as_deref());
-    let path = resolve_path(&app, payload.dir, &payload.id, backend.extension(), payload.sub_dir.as_deref())?;
+    let path = resolve_path(&app, payload.dir, &payload.name, payload.dir_name.as_deref(), payload.path.as_deref())?;
 
     let mut data = payload.data.unwrap_or(Value::Object(serde_json::Map::new()));
 
@@ -224,8 +306,7 @@ pub(crate) async fn delete<R: Runtime>(
     app: AppHandle<R>,
     payload: ConfiguratePayload,
 ) -> Result<()> {
-    let backend = storage::backend_for(&payload.format, payload.encryption_key.as_deref());
-    let path = resolve_path(&app, payload.dir, &payload.id, backend.extension(), payload.sub_dir.as_deref())?;
+    let path = resolve_path(&app, payload.dir, &payload.name, payload.dir_name.as_deref(), payload.path.as_deref())?;
 
     // Delete keyring entries first so secrets are wiped even if the file
     // removal fails for some reason. All entries are attempted regardless of
@@ -279,8 +360,11 @@ mod tests {
             "my_config",
             "my.config.v2",
             "config2",
+            "app.json",
+            "data.yaml",
+            ".example",
         ] {
-            assert!(validate_path_component(id).is_ok(), "should accept: {}", id);
+            assert!(validate_path_component(id).is_ok(), "should accept: {id}");
         }
     }
 
@@ -290,6 +374,7 @@ mod tests {
             "",
             ".",
             "..",
+            "...",           // all-dots
             "my/config",
             "my\\config",
             "my:config",
@@ -303,31 +388,78 @@ mod tests {
         ] {
             assert!(
                 validate_path_component(id).is_err(),
-                "should reject: {:?}",
-                id
+                "should reject: {id:?}",
             );
         }
     }
 
-    // ---- validate_sub_dir ----
+    // ---- validate_config_name ----
 
     #[test]
-    fn valid_sub_dirs() {
-        for s in &["myapp", "myapp/config", ".hidden/folder", "a/b/c", "my-app"] {
-            assert!(validate_sub_dir(s).is_ok(), "should accept: {}", s);
+    fn valid_config_names() {
+        for name in &["app.json", ".env", "data.yaml", "settings.binc", ".example", "my-conf.json"] {
+            assert!(validate_config_name(name).is_ok(), "should accept: {name}");
         }
     }
 
     #[test]
-    fn invalid_sub_dirs() {
+    fn invalid_config_names() {
+        for name in &["", ".", "..", "a/b.json", "a\\b.json", "a:b", "a*b"] {
+            assert!(
+                validate_config_name(name).is_err(),
+                "should reject: {name:?}",
+            );
+        }
+    }
+
+    // ---- validate_dir_name ----
+
+    #[test]
+    fn valid_dir_names() {
+        for s in &["myapp", "myapp/config", ".hidden/folder", "a/b/c", "my-app"] {
+            assert!(validate_dir_name(s).is_ok(), "should accept: {s}");
+        }
+    }
+
+    #[test]
+    fn invalid_dir_names() {
         for s in &[
             "",        // empty
             "a//b",    // empty segment
             "a/../b",  // .. component
             "a:b",     // Windows-forbidden char
             "a/./b",   // bare dot component
+            "a/.../b", // all-dots component
         ] {
-            assert!(validate_sub_dir(s).is_err(), "should reject: {:?}", s);
+            assert!(validate_dir_name(s).is_err(), "should reject: {s:?}");
+        }
+    }
+
+    // ---- validate_path_field ----
+
+    #[test]
+    fn valid_path_fields() {
+        for s in &[
+            "config",
+            "config/v2",
+            "profiles/default",
+            "a/b/c",
+            ".hidden",
+        ] {
+            assert!(validate_path_field(s).is_ok(), "should accept: {s}");
+        }
+    }
+
+    #[test]
+    fn invalid_path_fields() {
+        for s in &[
+            "",
+            "a//b",
+            "a/../b",
+            "a:b",
+            "a/./b",
+        ] {
+            assert!(validate_path_field(s).is_err(), "should reject: {s:?}");
         }
     }
 

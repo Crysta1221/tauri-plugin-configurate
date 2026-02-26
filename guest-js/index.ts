@@ -425,31 +425,72 @@ export class LazyConfigEntry<S extends SchemaObject> {
 
 /** Options passed to the `Configurate` constructor. */
 export interface ConfigurateOptions {
-  /** Unique identifier for the configuration file (used as the file stem). */
-  id: string;
+  /**
+   * Full filename for the configuration file, including extension.
+   *
+   * Examples: `"app.json"`, `"data.yaml"`, `"settings.binc"`, `".env"`.
+   *
+   * Must be a single path component — path separators (`/`, `\`) are rejected
+   * by the Rust side. Use the `path` option to store files in a sub-directory.
+   */
+  name: string;
   /** Base directory in which the configuration file will be stored. */
   dir: BaseDirectory;
   /**
-   * Optional sub-directory path relative to `dir`.
+   * Optional replacement for the app identifier directory.
    *
-   * Use forward slashes as separators (e.g. `"my-app/config"`).
+   * When provided, **replaces** the identifier component of the resolved base path.
+   * For example, with `BaseDirectory.AppConfig` on Windows:
+   *
+   * | `dirName`    | Resolved root                        |
+   * | ------------ | ------------------------------------ |
+   * | _(omitted)_  | `%APPDATA%/com.example.app/`         |
+   * | `"my-app"`   | `%APPDATA%/my-app/`                  |
+   * | `"org/app"`  | `%APPDATA%/org/app/`                 |
+   *
    * Each segment is validated on the Rust side; `..` and Windows-forbidden
    * characters are rejected.
    *
-   * When omitted, files are written directly into `dir`.
-   *
    * @example
    * ```ts
-   * // Stores config at <AppConfig>/my-app/settings.json
+   * // → %APPDATA%/my-app/app.json  (identifier replaced)
    * new Configurate(schema, {
-   *   id: "settings",
+   *   name: "app.json",
    *   dir: BaseDirectory.AppConfig,
    *   format: "json",
-   *   subDir: "my-app",
+   *   dirName: "my-app",
    * });
    * ```
    */
-  subDir?: string;
+  dirName?: string;
+  /**
+   * Optional sub-directory within the root (after `dirName` / identifier is applied).
+   *
+   * Use forward slashes to create nested directories (e.g. `"config/v2"`).
+   * Each segment is validated on the Rust side; `..` and Windows-forbidden
+   * characters are rejected.
+   *
+   * ### Path layout
+   *
+   * | `dirName`   | `path`      | Resolved path (AppConfig, identifier `com.example.app`)  |
+   * | ----------- | ----------- | --------------------------------------------------------- |
+   * | _(omitted)_ | _(omitted)_ | `%APPDATA%/com.example.app/<name>`                        |
+   * | `"my-app"`  | _(omitted)_ | `%APPDATA%/my-app/<name>`                                 |
+   * | _(omitted)_ | `"cfg/v2"`  | `%APPDATA%/com.example.app/cfg/v2/<name>`                 |
+   * | `"my-app"`  | `"cfg/v2"`  | `%APPDATA%/my-app/cfg/v2/<name>`                          |
+   *
+   * @example
+   * ```ts
+   * // → %APPDATA%/com.example.app/profiles/settings.json
+   * new Configurate(schema, {
+   *   name: "settings.json",
+   *   dir: BaseDirectory.AppConfig,
+   *   format: "json",
+   *   path: "profiles",
+   * });
+   * ```
+   */
+  path?: string;
   /** On-disk storage format. */
   format: StorageFormat;
   /**
@@ -480,7 +521,7 @@ export interface ConfigurateOptions {
  * });
  *
  * const config = new Configurate(schema, {
- *   id: "app-config",
+ *   name: "app-config.json",
  *   dir: BaseDirectory.AppConfig,
  *   format: "json",
  * });
@@ -517,6 +558,29 @@ export class Configurate<S extends SchemaObject> {
         `encryptionKey is only supported with format "binary", got "${opts.format}". ` +
           `Remove encryptionKey or change format to "binary".`,
       );
+    }
+    if (!opts.name) {
+      throw new Error('Configurate: "name" must not be empty.');
+    }
+    if (opts.name.includes("/") || opts.name.includes("\\")) {
+      throw new Error(
+        'Configurate: "name" must be a single filename and cannot contain path separators.',
+      );
+    }
+    if (opts.name === "." || opts.name === "..") {
+      throw new Error('Configurate: "name" must not be "." or "..".');
+    }
+    if (opts.dirName !== undefined) {
+      const dirNameSegments = opts.dirName.split(/[/\\]/);
+      if (dirNameSegments.some((seg) => seg === "" || seg === "." || seg === "..")) {
+        throw new Error('Configurate: "dirName" must not contain empty or special segments.');
+      }
+    }
+    if (opts.path !== undefined) {
+      const pathSegments = opts.path.split(/[/\\]/);
+      if (pathSegments.some((seg) => seg === "" || seg === "." || seg === "..")) {
+        throw new Error('Configurate: "path" must not contain empty or special segments.');
+      }
     }
     this._schema = schema as unknown as S;
     this._opts = opts;
@@ -637,14 +701,18 @@ export class Configurate<S extends SchemaObject> {
     withUnlock: boolean,
   ): Record<string, unknown> {
     const base: Record<string, unknown> = {
-      id: this._opts.id,
+      name: this._opts.name,
       dir: this._opts.dir as number,
       format: this._opts.format,
       withUnlock,
     };
 
-    if (this._opts.subDir) {
-      base.subDir = this._opts.subDir;
+    if (this._opts.dirName !== undefined) {
+      base.dirName = this._opts.dirName;
+    }
+
+    if (this._opts.path !== undefined) {
+      base.path = this._opts.path;
     }
 
     if (this._opts.encryptionKey) {
@@ -684,16 +752,19 @@ export class Configurate<S extends SchemaObject> {
 
 /**
  * Base options shared across all configs created by a `ConfigurateFactory`.
- * `id` is omitted because each config provides its own.
+ * `name` is omitted because each config provides its own.
+ *
+ * `dirName` replaces the app identifier component of the base path.
+ * `path` adds a sub-directory within the root (after `dirName` / identifier).
  */
-export type ConfigurateBaseOptions = Omit<ConfigurateOptions, "id">;
+export type ConfigurateBaseOptions = Omit<ConfigurateOptions, "name">;
 
 /**
  * A factory that creates `Configurate` instances with pre-set shared options
- * (`dir`, `format`, and optionally `encryptionKey`).
+ * (`dir`, `format`, and optionally `dirName`, `path`, `encryptionKey`).
  *
  * Each call to `build()` creates a fresh `Configurate` instance — schema,
- * `id`, and all other options can differ freely.  This is the recommended
+ * `name`, and all other options can differ freely.  This is the recommended
  * way to manage multiple config files with different schemas in a single
  * application.
  *
@@ -710,30 +781,100 @@ export type ConfigurateBaseOptions = Omit<ConfigurateOptions, "id">;
  *   format: "json",
  * });
  *
- * const appConfig    = factory.build(appSchema,    "app");     // → app.json
- * const cacheConfig  = factory.build(cacheSchema,  "cache");   // → cache.json
- * const secretConfig = factory.build(secretSchema, "secrets"); // → secrets.json
+ * const appConfig    = factory.build(appSchema,    "app.json");                                     // → app.json
+ * const cacheConfig  = factory.build(cacheSchema,  "cache.json");                                   // → cache.json
+ * const nestedConfig = factory.build(appSchema, { name: "app.json", path: "config" });              // → config/app.json
+ * const movedConfig  = factory.build(appSchema, { name: "app.json", dirName: "my-app" });           // → %APPDATA%/my-app/app.json
+ * const fullConfig   = factory.build(appSchema, { name: "app.json", dirName: "my-app", path: "cfg" }); // → %APPDATA%/my-app/cfg/app.json
  * ```
  */
 export class ConfigurateFactory {
   constructor(private readonly _baseOpts: ConfigurateBaseOptions) {}
 
   /**
-   * Creates a `Configurate<S>` for the given schema and id, applying the
-   * shared base options.
+   * Creates a `Configurate<S>` for the given schema, applying the shared base
+   * options.
    *
-   * The optional `subDir` argument overrides the factory-level `subDir` for
-   * this specific instance.
+   * `nameOrConfig` accepts either:
+   * - a plain `string` — used as the full filename (e.g. `"app.json"`, `".env"`)
+   * - `{ name: string; path?: string | null; dirName?: string | null }` — explicitly
+   *   provides the filename, optional sub-directory within the root, and optional
+   *   identifier replacement
+   *
+   * In the object form, passing `null` for `dirName` or `path` explicitly
+   * disables the factory-level value. Omitting the field (or passing
+   * `undefined`) falls back to the factory-level value.
+   *
+   * The optional third `dirName` string overrides the factory-level `dirName`
+   * for this instance (only used when `nameOrConfig` is a plain string).
+   *
+   * ### Path layout (AppConfig, identifier `com.example.app`)
+   *
+   * | `nameOrConfig`                                   | `dirName` arg | Resolved path                                  |
+   * | ------------------------------------------------ | ------------- | ---------------------------------------------- |
+   * | `"app.json"`                                     | _(omitted)_   | `%APPDATA%/com.example.app/app.json`           |
+   * | `"app.json"`                                     | `"my-app"`    | `%APPDATA%/my-app/app.json`                    |
+   * | `{ name: "app.json", path: "cfg" }`              | _(omitted)_   | `%APPDATA%/com.example.app/cfg/app.json`       |
+   * | `{ name: "app.json", dirName: "my-app" }`        | _(omitted)_   | `%APPDATA%/my-app/app.json`                    |
+   * | `{ name: "app.json", dirName: "my-app", path: "cfg" }` | _(omitted)_ | `%APPDATA%/my-app/cfg/app.json`          |
+   *
+   * @example
+   * ```ts
+   * factory.build(schema, "app.json")                                              // → <root>/app.json
+   * factory.build(schema, "app.json", "my-app")                                   // → %APPDATA%/my-app/app.json
+   * factory.build(schema, { name: "app.json", path: "config" })                   // → <root>/config/app.json
+   * factory.build(schema, { name: "app.json", dirName: "my-app" })                // → %APPDATA%/my-app/app.json
+   * factory.build(schema, { name: "cfg.json", dirName: "my-app", path: "a/b" })   // → %APPDATA%/my-app/a/b/cfg.json
+   * ```
    */
   build<S extends SchemaObject>(
     schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-    id: string,
-    subDir?: string,
+    name: string,
+    dirName?: string,
+  ): Configurate<S>;
+  build<S extends SchemaObject>(
+    schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
+    config: { name: string; path?: string | null; dirName?: string | null },
+  ): Configurate<S>;
+  build<S extends SchemaObject>(
+    schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
+    nameOrConfig:
+      | string
+      | { name: string; path?: string | null; dirName?: string | null },
+    dirName?: string,
   ): Configurate<S> {
-    const opts: ConfigurateOptions = { ...this._baseOpts, id };
-    if (subDir !== undefined) {
-      opts.subDir = subDir;
+    let fileName: string;
+    let resolvedDirName: string | undefined;
+    let resolvedPath: string | undefined;
+
+    if (typeof nameOrConfig === "string") {
+      fileName = nameOrConfig;
+      // The explicit `dirName` argument overrides the factory-level dirName;
+      // fall back to the factory-level dirName when omitted.
+      resolvedDirName = dirName ?? this._baseOpts.dirName;
+      resolvedPath = this._baseOpts.path;
+    } else {
+      fileName = nameOrConfig.name;
+      // Object form: fields inside take precedence over factory-level values.
+      // Pass `null` to explicitly disable the factory-level value;
+      // `undefined` (or omitted) falls back to the factory-level value.
+      resolvedDirName =
+        nameOrConfig.dirName === null
+          ? undefined
+          : (nameOrConfig.dirName ?? this._baseOpts.dirName);
+      resolvedPath =
+        nameOrConfig.path === null
+          ? undefined
+          : (nameOrConfig.path ?? this._baseOpts.path);
     }
+
+    const opts: ConfigurateOptions = {
+      ...this._baseOpts,
+      name: fileName,
+      dirName: resolvedDirName,
+      path: resolvedPath,
+    };
+
     // Explicitly pass <S> to prevent TypeScript from re-inferring the type
     // parameter from the argument and double-evaluating HasDuplicateKeyringIds
     // on the already-constrained type.  The duplicate-id guarantee was already

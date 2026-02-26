@@ -6,12 +6,13 @@ Define your config schema once in TypeScript and get full type inference for rea
 
 ## Features
 
-- **Type-safe schema** — define your config shape with `defineConfig()` and get compile-time checked reads/writes
-- **OS keyring support** — mark fields with `keyring()` to store secrets in the native credential store (Keychain / Credential Manager / libsecret) and keep them off disk
-- **Multiple formats** — JSON (human-readable), YAML (human-readable), binary (compact), or encrypted binary (XChaCha20-Poly1305)
-- **Minimal IPC** — every operation (file read + keyring fetch) is batched into a single IPC round-trip
-- **Multiple config files** — use `ConfigurateFactory` to manage multiple files with different schemas from one place
-- **Path traversal protection** — config identifiers and sub-directory paths are validated before use as file names; `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, `.`, `..`, and null bytes are all rejected
+- 🛡️ **Type-safe schema** — define your config shape with `defineConfig()` and get compile-time checked reads/writes
+- 🔑 **OS keyring support** — mark fields with `keyring()` to store secrets in the native credential store (Keychain / Credential Manager / libsecret) and keep them off disk
+- 💾 **Multiple formats** — JSON (human-readable), YAML (human-readable), binary (compact), or encrypted binary (XChaCha20-Poly1305)
+- ⚡ **Minimal IPC** — every operation (file read + keyring fetch) is batched into a single IPC round-trip
+- 🗂️ **Multiple config files** — use `ConfigurateFactory` to manage multiple files with different schemas from one place
+- 🛤️ **Flexible path control** — `dirName` to replace the app identifier, `path` to add sub-directories, custom extensions via the `name` field
+- 🚧 **Path traversal protection** — `..`, bare `.`, empty segments, and Windows-forbidden characters (`/ \ : * ? " < > |` and null bytes) are rejected with an `invalid payload` error
 
 ## Installation
 
@@ -102,29 +103,59 @@ const appSchema = defineConfig({
 
 ### 2. Create a factory
 
-`ConfigurateFactory` holds shared options (`dir`, `format`, optional `subDir`, optional `encryptionKey`) and produces `Configurate` instances — one per config file.
+`ConfigurateFactory` holds shared options (`dir`, `format`, optional `dirName`, optional `path`, optional `encryptionKey`) and produces `Configurate` instances — one per config file.
 
 ```ts
 const factory = new ConfigurateFactory({
   dir: BaseDirectory.AppConfig,
   format: "json",
-  // Optional: store all files under <AppConfig>/my-app/
-  // subDir: "my-app",
+  // dirName: "my-app",   // replaces the identifier: %APPDATA%/my-app/
+  // path: "config",      // sub-directory within the root: <root>/config/
+  // encryptionKey: key,  // enables encrypted binary (.binc), requires format: "binary"
 });
 ```
 
-> **`subDir`** — a forward-slash-separated relative path (e.g. `"my-app"` or `"my-app/config"`) appended between the base directory and the config file name. Each path component must not be empty, `.`, `..`, or contain Windows-forbidden characters. When omitted, files are written directly into `dir`.
-
 ### 3. Build a `Configurate` instance
 
-```ts
-const appConfig = factory.build(appSchema, "app"); // → app.json
+`factory.build()` accepts either a plain filename string or an object for full control.
 
-// Override the factory-level subDir for one specific file:
-const specialConfig = factory.build(specialSchema, "special", "other-dir"); // → <AppConfig>/other-dir/special.json
+```ts
+// Plain string — filename as-is (include extension)
+const appConfig = factory.build(appSchema, "app.json");
+
+// Object form — sub-directory within the root
+const nestedConfig = factory.build(appSchema, { name: "app.json", path: "config/v2" });
+
+// Object form — replace the app identifier directory
+const movedConfig = factory.build(appSchema, { name: "app.json", dirName: "my-app" });
+
+// Object form — both dirName and path
+const fullConfig = factory.build(appSchema, { name: "app.json", dirName: "my-app", path: "config" });
+
+// Third-argument shorthand — overrides factory-level dirName (string form only)
+const specialConfig = factory.build(appSchema, "special.json", "other-dir");
 ```
 
-Each call to `build()` can use a different schema, `id`, and/or `subDir`.
+#### Path layout
+
+With `BaseDirectory.AppConfig` on Windows (identifier `com.example.app`):
+
+| `name`      | `dirName`   | `path`      | Resolved path                                       |
+| ----------- | ----------- | ----------- | --------------------------------------------------- |
+| `app.json`  | _(omitted)_ | _(omitted)_ | `%APPDATA%\com.example.app\app.json`                |
+| `app.json`  | `my-app`    | _(omitted)_ | `%APPDATA%\my-app\app.json`                         |
+| `app.json`  | _(omitted)_ | `cfg/v2`    | `%APPDATA%\com.example.app\cfg\v2\app.json`         |
+| `app.json`  | `my-app`    | `cfg/v2`    | `%APPDATA%\my-app\cfg\v2\app.json`                  |
+| `.env`      | _(omitted)_ | _(omitted)_ | `%APPDATA%\com.example.app\.env`                   |
+| `data.yaml` | `my-app`    | `profiles`  | `%APPDATA%\my-app\profiles\data.yaml`              |
+
+> **`name`** — full filename including extension (e.g. `"app.json"`, `"data.yaml"`, `".env"`). Must be a single component — path separators are rejected. No extension is appended automatically.
+>
+> **`dirName`** — replaces the identifier component of the base path (`com.example.app` → your value). For base directories without an identifier (e.g. `Desktop`, `Home`), `dirName` is appended as a sub-directory instead. Each segment is validated; `..` and Windows-forbidden characters are rejected.
+>
+> **`path`** — adds a sub-directory within the root (after `dirName` / identifier). Use forward slashes for nesting (e.g. `"profiles/v2"`). Each segment is validated the same way.
+
+Each call to `build()` can use a different schema, `name`, `dirName`, and/or `path`.
 
 ### 4. Create, load, save, delete
 
@@ -201,7 +232,7 @@ await appConfig.delete();
 
 ## Multiple config files
 
-Use `ConfigurateFactory` to manage several config files — each can have a different schema, id, or format.
+Use `ConfigurateFactory` to manage several config files — each can have a different schema, name, or format.
 
 ```ts
 const appSchema = defineConfig({ theme: String, language: String });
@@ -213,15 +244,22 @@ const secretSchema = defineConfig({
 const factory = new ConfigurateFactory({
   dir: BaseDirectory.AppConfig,
   format: "json",
-  subDir: "my-app", // all files stored under <AppConfig>/my-app/
+  dirName: "my-app", // → %APPDATA%/my-app/ (replaces identifier)
 });
 
-const appConfig    = factory.build(appSchema,    "app");     // → my-app/app.json
-const cacheConfig  = factory.build(cacheSchema,  "cache");   // → my-app/cache.json
-const secretConfig = factory.build(secretSchema, "secrets"); // → my-app/secrets.json
+const appConfig    = factory.build(appSchema,    "app.json");    // → %APPDATA%/my-app/app.json
+const cacheConfig  = factory.build(cacheSchema,  "cache.json");  // → %APPDATA%/my-app/cache.json
+const secretConfig = factory.build(secretSchema, "secrets.json"); // → %APPDATA%/my-app/secrets.json
 
-// Override subDir per-file when needed:
-const legacyConfig = factory.build(legacySchema, "legacy", "old-dir"); // → old-dir/legacy.json
+// Object form — sub-directory within the root
+const v2Config   = factory.build(appSchema,   { name: "app.json",   path: "v2" });           // → %APPDATA%/my-app/v2/app.json
+const deepConfig = factory.build(cacheSchema, { name: "cache.json", path: "archive/2025" }); // → %APPDATA%/my-app/archive/2025/cache.json
+
+// Object form — override dirName per instance
+const otherConfig = factory.build(appSchema, { name: "app.json", dirName: "other-app" }); // → %APPDATA%/other-app/app.json
+
+// Third-argument shorthand (string form only)
+const legacyConfig = factory.build(appSchema, "legacy.json", "old-app"); // → %APPDATA%/old-app/legacy.json
 
 // Each instance is a full Configurate — all operations are available
 const app = await appConfig.load().run();
@@ -232,7 +270,7 @@ const cache = await cacheConfig.load().run();
 
 Set `format: "binary"` and provide an `encryptionKey` to store config files encrypted with **XChaCha20-Poly1305**. The 32-byte cipher key is derived internally via SHA-256, so any high-entropy string is suitable — a random key stored in the OS keyring is ideal.
 
-Encrypted files use the **`.binc`** extension (plain binary files use `.bin`). Never mix backends: opening a `.binc` file with the wrong or missing key returns an error; opening a plain `.bin` file with an `encryptionKey` also returns a decryption error.
+Encrypted files use the **`.binc`** extension (plain binary files use `.bin`). Since `name` is the full filename, you must specify the correct extension yourself (e.g. `"app.binc"` for encrypted, `"app.bin"` for plain binary, `"app.json"` for JSON, `"app.yaml"` for YAML). No extension is appended automatically — a mismatch between `format` and the file extension will not be caught at construction time. Never mix backends: opening a `.binc` file with the wrong or missing key returns an error; opening a plain `.bin` file with an `encryptionKey` also returns a decryption error.
 
 ```ts
 const encKey = await getEncryptionKeyFromKeyring(); // your own retrieval logic
@@ -243,7 +281,7 @@ const factory = new ConfigurateFactory({
   encryptionKey: encKey,
 });
 
-const config = factory.build(appSchema, "app"); // → app.binc (encrypted)
+const config = factory.build(appSchema, "app.binc"); // encrypted binary
 
 await config.create({ theme: "dark", language: "en" /* ... */ }).run();
 const locked = await config.load().run();
@@ -277,23 +315,44 @@ keyring(String, { id: "my-secret" });
 new ConfigurateFactory(baseOpts: ConfigurateBaseOptions)
 ```
 
-`ConfigurateBaseOptions` is `ConfigurateOptions` without `id`:
+`ConfigurateBaseOptions` is `ConfigurateOptions` without `name`:
 
-| Field           | Type            | Description                                         |
-| --------------- | --------------- | --------------------------------------------------- |
-| `dir`           | `BaseDirectory` | Base directory for all files                        |
-| `subDir`        | `string?`       | Sub-directory path relative to `dir` (optional)     |
-| `format`        | `StorageFormat` | `"json"`, `"yaml"`, or `"binary"`                   |
-| `encryptionKey` | `string?`       | Encryption key (binary format only, yields `.binc`) |
+| Field           | Type            | Description                                                          |
+| --------------- | --------------- | -------------------------------------------------------------------- |
+| `dir`           | `BaseDirectory` | Base directory for all files                                         |
+| `dirName`       | `string?`       | Replaces the app identifier component of the base path               |
+| `path`          | `string?`       | Sub-directory within the root (after `dirName` / identifier)         |
+| `format`        | `StorageFormat` | `"json"`, `"yaml"`, or `"binary"`                                    |
+| `encryptionKey` | `string?`       | Encryption key (binary format only)                                  |
 
-#### `factory.build(schema, id, subDir?)`
+#### `factory.build(schema, name, dirName?)` / `factory.build(schema, config)`
 
-Returns a `Configurate<S>` for the given schema and file stem. The optional `subDir` argument overrides the factory-level `subDir` for this specific instance.
+Returns a `Configurate<S>` for the given schema. The second argument is either:
+- a plain `string` — the full filename including extension (e.g. `"app.json"`, `".env"`)
+- `{ name: string; path?: string | null; dirName?: string | null }` — explicit filename, optional sub-directory, optional identifier replacement
+
+When using the string form, the optional third `dirName` argument overrides the factory-level `dirName` for this instance.
+
+In the object form, passing `null` for `dirName` or `path` explicitly disables the factory-level value. Omitting the field (or passing `undefined`) falls back to the factory-level value.
 
 ```ts
-factory.build(schema, "app")               // → <dir>/app.json
-factory.build(schema, "app", "my-app")    // → <dir>/my-app/app.json
+factory.build(schema, "app.json")                                           // → <root>/app.json
+factory.build(schema, "app.json", "my-app")                                 // → %APPDATA%/my-app/app.json
+factory.build(schema, { name: "app.json", path: "config" })                 // → <root>/config/app.json
+factory.build(schema, { name: "app.json", dirName: "my-app" })              // → %APPDATA%/my-app/app.json
+factory.build(schema, { name: "cfg.json", dirName: "my-app", path: "a/b" }) // → %APPDATA%/my-app/a/b/cfg.json
 ```
+
+### `ConfigurateOptions`
+
+| Field           | Type            | Description                                                                  |
+| --------------- | --------------- | ---------------------------------------------------------------------------- |
+| `name`          | `string`        | Full filename including extension (`"app.json"`, `".env"`). No path separators (`/` or `\`) allowed.  |
+| `dir`           | `BaseDirectory` | Base directory                                                               |
+| `dirName`       | `string?`       | Replaces the identifier component of the base path                           |
+| `path`          | `string?`       | Sub-directory within the root. Forward-slash separated (e.g. `"cfg/v2"`)     |
+| `format`        | `StorageFormat` | `"json"`, `"yaml"`, or `"binary"`                                            |
+| `encryptionKey` | `string?`       | Encryption key (binary format only)                                          |
 
 ### `Configurate<S>`
 
@@ -339,9 +398,9 @@ factory.build(schema, "app", "my-app")    // → <dir>/my-app/app.json
 ## Security considerations
 
 - **Secrets off disk** — keyring fields are set to `null` before the file is written; the plaintext never touches the filesystem.
-- **Path traversal protection** — config IDs and `subDir` components containing `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, bare `.` or `..`, and null bytes are rejected with an `invalid payload` error.
-- **Encrypted binary (`.binc`)** — XChaCha20-Poly1305 provides authenticated encryption; any tampering with the ciphertext is detected at read time and returns an error. Encrypted files are distinguished from plain binary (`.bin`) by their extension.
-- **Binary ≠ encrypted** — `format: "binary"` without `encryptionKey` stores data as plain bincode-encoded JSON (`.bin`). Use `encryptionKey` when confidentiality is required.
+- **Path traversal protection** — `name`, `dirName`, and `path` components containing `..`, bare `.`, empty segments, and Windows-forbidden characters (`/ \ : * ? " < > |` and null bytes) are rejected with an `invalid payload` error.
+- **Authenticated encryption** — XChaCha20-Poly1305 provides authenticated encryption; any tampering with the ciphertext is detected at read time and returns an error.
+- **Binary ≠ encrypted** — `format: "binary"` without `encryptionKey` stores data as plain bincode-encoded JSON. Use `encryptionKey` when confidentiality is required.
 - **Key entropy** — when using `encryptionKey`, provide a high-entropy value (≥ 128 bits of randomness). A randomly generated key stored in the OS keyring is recommended.
 - **Keyring availability** — the OS keyring may not be available in all environments (e.g. headless CI). Handle `keyring error` responses gracefully in those cases.
 - **In-memory secrets** — `UnlockedConfig.data` holds plaintext values in the JS heap until GC collection. JavaScript provides no guaranteed way to zero-out memory, so avoid keeping `UnlockedConfig` objects alive longer than necessary.
