@@ -16,6 +16,18 @@ Define your config schema once in TypeScript and get full type inference for rea
 
 ## Installation
 
+### Use Tauri-CLI
+```sh
+# npm
+npm tauri add configurate
+
+# pnpm
+pnpm tauri add configurate
+
+# bun
+bun tauri add configurate
+```
+
 ### Rust
 
 Add the plugin to `src-tauri/Cargo.toml`:
