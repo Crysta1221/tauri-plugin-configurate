@@ -37,13 +37,27 @@ pub struct KeyringOptions {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfiguratePayload {
-    /// Unique identifier for this configuration file.
-    pub id: String,
+    /// Full filename for this configuration file (including extension, no path separators).
+    /// For example: `"app.json"`, `"data.yaml"`, `".env"`.
+    /// Path separators (`/`, `\`) are rejected; use `path` for subdirectories.
+    pub name: String,
     /// Base directory (deserialized directly from Tauri's `BaseDirectory` integer enum).
     pub dir: BaseDirectory,
-    /// Optional sub-directory path relative to `dir` (e.g. `"my-app/config"`).
+    /// Optional replacement for the app identifier directory.
+    ///
+    /// When provided, **replaces** the identifier component of the resolved base path.
+    /// For example, with `BaseDirectory::AppConfig` on Windows:
+    /// - absent     → `%APPDATA%\<identifier>\`
+    /// - `"my-app"` → `%APPDATA%\my-app\`
+    ///
     /// Each path component is validated; `..` and Windows-forbidden characters are rejected.
-    pub sub_dir: Option<String>,
+    pub dir_name: Option<String>,
+    /// Optional sub-directory within the root (after `dir_name` / identifier is applied).
+    ///
+    /// Use forward slashes for nested paths (e.g. `"config/v2"`).
+    /// Each component is validated; `..` and Windows-forbidden characters are rejected.
+    /// The resolved path stays within the root directory.
+    pub path: Option<String>,
     /// Storage format to use.
     pub format: StorageFormat,
     /// Plain (non-secret) configuration data as a JSON value.
