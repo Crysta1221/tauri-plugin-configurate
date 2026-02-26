@@ -1,6 +1,6 @@
 {
   "name": "tauri-plugin-configurate-api",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Tauri v2 plugin for type-safe application configuration management.",
   "keywords": [
     "config",

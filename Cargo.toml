@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-configurate"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Crysta1221"]
 description = "A Tauri v2 plugin for type-safe application configuration management."
 edition = "2021"
