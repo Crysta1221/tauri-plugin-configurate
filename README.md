@@ -347,7 +347,7 @@ factory.build(schema, { name: "cfg.json", dirName: "my-app", path: "a/b" }) // â
 
 | Field           | Type            | Description                                                                  |
 | --------------- | --------------- | ---------------------------------------------------------------------------- |
-| `name`          | `string`        | Full filename including extension (`"app.json"`, `".env"`). No `/` allowed.  |
+| `name`          | `string`        | Full filename including extension (`"app.json"`, `".env"`). No path separators (`/` or `\`) allowed.  |
 | `dir`           | `BaseDirectory` | Base directory                                                               |
 | `dirName`       | `string?`       | Replaces the identifier component of the base path                           |
 | `path`          | `string?`       | Sub-directory within the root. Forward-slash separated (e.g. `"cfg/v2"`)     |
