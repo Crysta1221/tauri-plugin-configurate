@@ -4,6 +4,7 @@
     defineConfig,
     keyring,
     BaseDirectory,
+    ConfigurateFactory,
   } from 'tauri-plugin-configurate-api';
   // Schema definition – Single Source of Truth.
   // "database.password" and "apiKey" are keyring-protected fields.
@@ -19,10 +20,11 @@
   // Keyring options shared across all operations.
   const KEYRING_OPTS = { service: 'tauri-configurate-example', account: 'default' };
   const config = new Configurate(schema, {
-    id: 'example-config',
+    name: 'example-config',
     dir: BaseDirectory.AppConfig,
     format: 'json',
   });
+
   let log = $state<string[]>([]);
   let appName = $state('MyApp');
   let port = $state(3000);
