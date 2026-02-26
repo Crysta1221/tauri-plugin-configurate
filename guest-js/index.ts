@@ -423,17 +423,14 @@ export class LazyConfigEntry<S extends SchemaObject> {
 // Configurate class
 // ---------------------------------------------------------------------------
 
-/** Options passed to the `Configurate` constructor. */
-export interface ConfigurateOptions {
-  /**
-   * Full filename for the configuration file, including extension.
-   *
-   * Examples: `"app.json"`, `"data.yaml"`, `"settings.binc"`, `".env"`.
-   *
-   * Must be a single path component — path separators (`/`, `\`) are rejected
-   * by the Rust side. Use the `path` option to store files in a sub-directory.
-   */
-  name: string;
+/**
+ * Base options shared across all configs created by a `ConfigurateFactory`.
+ * `name` is omitted because each config provides its own filename.
+ *
+ * `dirName` replaces the app identifier component of the base path.
+ * `path` adds a sub-directory within the root (after `dirName` / identifier).
+ */
+export interface ConfigurateBaseOptions {
   /** Base directory in which the configuration file will be stored. */
   dir: BaseDirectory;
   /**
@@ -450,17 +447,6 @@ export interface ConfigurateOptions {
    *
    * Each segment is validated on the Rust side; `..` and Windows-forbidden
    * characters are rejected.
-   *
-   * @example
-   * ```ts
-   * // → %APPDATA%/my-app/app.json  (identifier replaced)
-   * new Configurate(schema, {
-   *   name: "app.json",
-   *   dir: BaseDirectory.AppConfig,
-   *   format: "json",
-   *   dirName: "my-app",
-   * });
-   * ```
    */
   dirName?: string;
   /**
@@ -478,17 +464,6 @@ export interface ConfigurateOptions {
    * | `"my-app"`  | _(omitted)_ | `%APPDATA%/my-app/<name>`                                 |
    * | _(omitted)_ | `"cfg/v2"`  | `%APPDATA%/com.example.app/cfg/v2/<name>`                 |
    * | `"my-app"`  | `"cfg/v2"`  | `%APPDATA%/my-app/cfg/v2/<name>`                          |
-   *
-   * @example
-   * ```ts
-   * // → %APPDATA%/com.example.app/profiles/settings.json
-   * new Configurate(schema, {
-   *   name: "settings.json",
-   *   dir: BaseDirectory.AppConfig,
-   *   format: "json",
-   *   path: "profiles",
-   * });
-   * ```
    */
   path?: string;
   /** On-disk storage format. */
@@ -505,6 +480,19 @@ export interface ConfigurateOptions {
    * Encrypted binary files use the `.binc` extension instead of `.bin`.
    */
   encryptionKey?: string;
+}
+
+/** Options passed to the `Configurate` constructor. */
+export interface ConfigurateOptions extends ConfigurateBaseOptions {
+  /**
+   * Full filename for the configuration file, including extension.
+   *
+   * Examples: `"app.json"`, `"data.yaml"`, `"settings.binc"`, `".env"`.
+   *
+   * Must be a single path component — path separators (`/`, `\`) are rejected
+   * by the Rust side. Use the `path` option to store files in a sub-directory.
+   */
+  name: string;
 }
 
 /**
@@ -572,14 +560,22 @@ export class Configurate<S extends SchemaObject> {
     }
     if (opts.dirName !== undefined) {
       const dirNameSegments = opts.dirName.split(/[/\\]/);
-      if (dirNameSegments.some((seg) => seg === "" || seg === "." || seg === "..")) {
-        throw new Error('Configurate: "dirName" must not contain empty or special segments.');
+      if (
+        dirNameSegments.some((seg) => seg === "" || seg === "." || seg === "..")
+      ) {
+        throw new Error(
+          'Configurate: "dirName" must not contain empty or special segments.',
+        );
       }
     }
     if (opts.path !== undefined) {
       const pathSegments = opts.path.split(/[/\\]/);
-      if (pathSegments.some((seg) => seg === "" || seg === "." || seg === "..")) {
-        throw new Error('Configurate: "path" must not contain empty or special segments.');
+      if (
+        pathSegments.some((seg) => seg === "" || seg === "." || seg === "..")
+      ) {
+        throw new Error(
+          'Configurate: "path" must not contain empty or special segments.',
+        );
       }
     }
     this._schema = schema as unknown as S;
@@ -751,13 +747,20 @@ export class Configurate<S extends SchemaObject> {
 // ---------------------------------------------------------------------------
 
 /**
- * Base options shared across all configs created by a `ConfigurateFactory`.
- * `name` is omitted because each config provides its own.
+ * Object form accepted by `ConfigurateFactory.build()` as the second argument.
  *
- * `dirName` replaces the app identifier component of the base path.
- * `path` adds a sub-directory within the root (after `dirName` / identifier).
+ * - `name` — filename (may include a relative path, e.g. `"config/state.bin"`)
+ * - `path` — sub-directory appended after the root / `dirName`; `null` disables the factory-level value
+ * - `dirName` — replaces the app identifier segment; `null` disables the factory-level value
  */
-export type ConfigurateBaseOptions = Omit<ConfigurateOptions, "name">;
+export interface BuildConfig {
+  /** Filename including extension. May contain `/`-separated path segments (e.g. `"config/state.bin"`). */
+  name: string;
+  /** Optional sub-directory within the root. Pass `null` to disable the factory-level value. */
+  path?: string | null;
+  /** Optional replacement for the app identifier directory. Pass `null` to disable the factory-level value. */
+  dirName?: string | null;
+}
 
 /**
  * A factory that creates `Configurate` instances with pre-set shared options
@@ -834,13 +837,11 @@ export class ConfigurateFactory {
   ): Configurate<S>;
   build<S extends SchemaObject>(
     schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-    config: { name: string; path?: string | null; dirName?: string | null },
+    config: BuildConfig,
   ): Configurate<S>;
   build<S extends SchemaObject>(
     schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-    nameOrConfig:
-      | string
-      | { name: string; path?: string | null; dirName?: string | null },
+    nameOrConfig: string | BuildConfig,
     dirName?: string,
   ): Configurate<S> {
     let fileName: string;
