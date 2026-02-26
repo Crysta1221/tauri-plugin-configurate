@@ -834,18 +834,18 @@ export class ConfigurateFactory {
       | { name: string; path?: string | null; dirName?: string | null },
     dirName?: string,
   ): Configurate<S> {
-    let name: string;
+    let fileName: string;
     let resolvedDirName: string | undefined;
     let resolvedPath: string | undefined;
 
     if (typeof nameOrConfig === "string") {
-      name = nameOrConfig;
+      fileName = nameOrConfig;
       // The explicit `dirName` argument overrides the factory-level dirName;
       // fall back to the factory-level dirName when omitted.
       resolvedDirName = dirName ?? this._baseOpts.dirName;
       resolvedPath = this._baseOpts.path;
     } else {
-      name = nameOrConfig.name;
+      fileName = nameOrConfig.name;
       // Object form: fields inside take precedence over factory-level values.
       // Pass `null` to explicitly disable the factory-level value;
       // `undefined` (or omitted) falls back to the factory-level value.
@@ -861,7 +861,7 @@ export class ConfigurateFactory {
 
     const opts: ConfigurateOptions = {
       ...this._baseOpts,
-      name,
+      name: fileName,
       dirName: resolvedDirName,
       path: resolvedPath,
     };
