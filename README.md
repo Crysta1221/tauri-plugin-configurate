@@ -1,7 +1,6 @@
 # tauri-plugin-configurate
 
-A Tauri v2 plugin for type-safe application configuration management.
-
+Tauri v2 plugin for type-safe application configuration management.
 Define your config schema once in TypeScript and get full type inference for reads and writes. Supports JSON, YAML, and encrypted binary formats, with first-class OS keyring integration for storing secrets securely off disk.
 
 ## Features
