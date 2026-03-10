@@ -3,6 +3,23 @@
 use crate::error::{Error, Result};
 use serde_json::Value;
 
+/// Validates that a dot-separated `path` is non-empty and contains no empty segments
+/// (i.e. no leading dots, trailing dots, or consecutive dots).
+///
+/// Returns an error for paths such as `""`, `".path"`, `"path."`, `"path..name"`.
+pub fn validate_path(path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(Error::Dotpath("path must not be empty".to_string()));
+    }
+    if path.split('.').any(|segment| segment.is_empty()) {
+        return Err(Error::Dotpath(format!(
+            "invalid path '{}': empty segment is not allowed",
+            path
+        )));
+    }
+    Ok(())
+}
+
 /// Sets the value at the given dot-separated `path` inside `root` to `new_val`.
 /// Intermediate objects are created automatically if they are missing.
 pub fn set(root: &mut Value, path: &str, new_val: Value) -> Result<()> {

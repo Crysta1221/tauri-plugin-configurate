@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::path::BaseDirectory;
 
+use crate::dotpath;
 use crate::error::{Error, Result};
 
 pub const DEFAULT_SQLITE_DB_NAME: &str = "configurate.db";
@@ -216,13 +217,26 @@ impl ConfiguratePayload {
             }
         };
 
+        let schema_columns = self.schema_columns;
+
+        // Validate dotpaths early so callers get a clear error referencing the
+        // offending column rather than a cryptic dotpath error at write time.
+        for column in &schema_columns {
+            dotpath::validate_path(&column.dotpath).map_err(|e| {
+                Error::InvalidPayload(format!(
+                    "invalid dotpath in column '{}': {}",
+                    column.column_name, e
+                ))
+            })?;
+        }
+
         Ok(NormalizedConfiguratePayload {
             file_name,
             base_dir,
             dir_name,
             current_path,
             provider,
-            schema_columns: self.schema_columns,
+            schema_columns,
             data: self.data,
             keyring_entries: self.keyring_entries,
             keyring_options: self.keyring_options,
