@@ -2,7 +2,6 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand::RngCore;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{params_from_iter, Connection};
 use serde_json::{Map, Number, Value};
@@ -35,7 +34,7 @@ fn write_file_safely(path: &Path, bytes: &[u8]) -> Result<()> {
     // Include a random 32-bit suffix to avoid collisions on systems where the
     // clock resolution is coarser than nanoseconds or when multiple threads
     // write the same file concurrently.
-    let random_suffix: u32 = rand::rng().next_u32();
+    let random_suffix: u32 = rand::random();
     let tmp_name = format!(".{}.{}-{}.tmp", file_name, nanos, random_suffix);
     let tmp_path = path.with_file_name(tmp_name);
 
