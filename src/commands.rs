@@ -364,18 +364,22 @@ fn execute_delete<R: Runtime>(
     payload: NormalizedConfiguratePayload,
 ) -> Result<()> {
     // Delete keyring entries first so secrets are wiped even if the main
-    // storage removal fails. All entries are attempted regardless of errors.
-    // Failures are logged as warnings so partial cleanup is visible to developers.
+    // storage removal fails. All entries are attempted regardless of individual
+    // failures so that partial cleanup is maximised before returning an error.
     if let Some((entries, opts)) =
         keyring_pair("delete", &payload.keyring_entries, &payload.keyring_options)?
     {
+        let mut failures: Vec<String> = Vec::new();
         for entry in entries {
             if let Err(e) = keyring_store::delete(opts, &entry.id) {
-                eprintln!(
-                    "[tauri-plugin-configurate] warning: failed to delete keyring entry '{}': {}",
-                    entry.id, e
-                );
+                failures.push(format!("'{}': {}", entry.id, e));
             }
+        }
+        if !failures.is_empty() {
+            return Err(Error::Keyring(format!(
+                "failed to delete keyring entries: {}",
+                failures.join("; ")
+            )));
         }
     }
 
