@@ -3,6 +3,23 @@
 use crate::error::{Error, Result};
 use serde_json::Value;
 
+/// Validates that a dot-separated `path` is non-empty and contains no empty segments
+/// (i.e. no leading dots, trailing dots, or consecutive dots).
+///
+/// Returns an error for paths such as `""`, `".path"`, `"path."`, `"path..name"`.
+pub fn validate_path(path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(Error::Dotpath("path must not be empty".to_string()));
+    }
+    if path.split('.').any(|segment| segment.is_empty()) {
+        return Err(Error::Dotpath(format!(
+            "invalid path '{}': empty segment is not allowed",
+            path
+        )));
+    }
+    Ok(())
+}
+
 /// Sets the value at the given dot-separated `path` inside `root` to `new_val`.
 /// Intermediate objects are created automatically if they are missing.
 pub fn set(root: &mut Value, path: &str, new_val: Value) -> Result<()> {
@@ -54,6 +71,16 @@ pub fn set(root: &mut Value, path: &str, new_val: Value) -> Result<()> {
     // All non-empty paths with valid segments are handled inside the loop;
     // the final iteration always returns from the `i == parts.len() - 1` branch.
     unreachable!("path '{}' was not resolved inside loop", path)
+}
+
+/// Returns a reference to the value at the given dot-separated `path` inside `root`.
+/// Returns `None` if any segment is missing or if an intermediate node is not an object.
+pub fn get<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = root;
+    for part in path.split('.') {
+        current = current.get(part)?;
+    }
+    Some(current)
 }
 
 /// Replaces the value at the given dot-separated `path` inside `root` with `null`.

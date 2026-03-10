@@ -177,10 +177,10 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-delete`\n- `allow-unlock`",
+          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-delete`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-unlock`",
           "type": "string",
           "const": "configurate:default",
-          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-delete`\n- `allow-unlock`"
+          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-delete`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-unlock`"
         },
         {
           "description": "Enables the create command without any pre-configured scope.",
@@ -201,10 +201,22 @@
           "markdownDescription": "Enables the load command without any pre-configured scope."
         },
         {
+          "description": "Enables the load_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-load-all",
+          "markdownDescription": "Enables the load_all command without any pre-configured scope."
+        },
+        {
           "description": "Enables the save command without any pre-configured scope.",
           "type": "string",
           "const": "configurate:allow-save",
           "markdownDescription": "Enables the save command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-save-all",
+          "markdownDescription": "Enables the save_all command without any pre-configured scope."
         },
         {
           "description": "Enables the unlock command without any pre-configured scope.",
@@ -231,10 +243,22 @@
           "markdownDescription": "Denies the load command without any pre-configured scope."
         },
         {
+          "description": "Denies the load_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-load-all",
+          "markdownDescription": "Denies the load_all command without any pre-configured scope."
+        },
+        {
           "description": "Denies the save command without any pre-configured scope.",
           "type": "string",
           "const": "configurate:deny-save",
           "markdownDescription": "Denies the save command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-save-all",
+          "markdownDescription": "Denies the save_all command without any pre-configured scope."
         },
         {
           "description": "Denies the unlock command without any pre-configured scope.",

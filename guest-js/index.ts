@@ -42,11 +42,23 @@ export interface KeyringFieldOptions<Id extends string> {
 
 /**
  * Marks a schema field as keyring-protected.
+ *
+ * The `id` must be a non-empty string that does not contain `/`.
+ * It is used as part of the OS keyring user string (`{account}/{id}`),
+ * so `/` would create an ambiguous path-like structure.
  */
 export function keyring<T, Id extends string>(
   _type: abstract new (...args: never[]) => T | ((...args: never[]) => T),
   opts: KeyringFieldOptions<Id>,
 ): KeyringField<T, Id> {
+  if (!opts.id) {
+    throw new Error("keyring() id must not be empty.");
+  }
+  if (opts.id.includes("/")) {
+    throw new Error(
+      `keyring() id '${opts.id}' must not contain '/' (it is used as a separator in the keyring user string).`,
+    );
+  }
   const field = { _type: undefined as unknown as T, _id: opts.id } as Record<
     string,
     unknown
@@ -349,14 +361,19 @@ function collectSqliteColumns(
     }
   }
 
-  const seen = new Set<string>();
-  for (const col of out) {
-    if (seen.has(col.columnName)) {
-      throw new Error(
-        `SQLite schema column collision: '${col.columnName}'. Adjust schema field names to avoid collisions.`,
-      );
+  // Run the column name collision check only at the top-level call, after all
+  // nested schemas have been fully collected. Running it during recursive calls
+  // would check partial sets and could give misleading results.
+  if (prefix === "") {
+    const seen = new Set<string>();
+    for (const col of out) {
+      if (seen.has(col.columnName)) {
+        throw new Error(
+          `SQLite schema column collision: '${col.columnName}'. Adjust schema field names to avoid collisions.`,
+        );
+      }
+      seen.add(col.columnName);
     }
-    seen.add(col.columnName);
   }
 
   return out;
@@ -619,6 +636,14 @@ export class UnlockedConfig<S extends SchemaObject> {
     return this._data;
   }
 
+  /**
+   * Revokes access to the decrypted data through this instance.
+   * After calling this method, accessing `data` will throw an error.
+   *
+   * NOTE: This does NOT zero-clear the underlying memory. JavaScript's garbage
+   * collector manages memory reclamation and immediate clearing cannot be
+   * guaranteed. Treat this as an API-level access guard, not a cryptographic wipe.
+   */
   lock(): void {
     this._data = null;
   }

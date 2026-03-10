@@ -3,12 +3,14 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
+
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{params_from_iter, Connection};
 use serde_json::{Map, Number, Value};
 
+use crate::dotpath;
 use crate::error::{Error, Result};
-use crate::models::{ProviderKind, SqliteColumn, SqliteValueType};
+use crate::models::{NormalizedProvider, SqliteColumn, SqliteValueType};
 
 const SQLITE_JSON_BLOB_COLUMN: &str = "__config_json_blob";
 
@@ -34,7 +36,7 @@ fn write_file_safely(path: &Path, bytes: &[u8]) -> Result<()> {
     // Include a random 32-bit suffix to avoid collisions on systems where the
     // clock resolution is coarser than nanoseconds or when multiple threads
     // write the same file concurrently.
-    let random_suffix: u32 = rand::thread_rng().next_u32();
+    let random_suffix: u32 = rand::random();
     let tmp_name = format!(".{}.{}-{}.tmp", file_name, nanos, random_suffix);
     let tmp_path = path.with_file_name(tmp_name);
 
@@ -89,14 +91,14 @@ impl StorageBackend for JsonBackend {
     }
 }
 
-/// YAML storage backend using `serde_yaml`.
+/// YAML storage backend using `serde_yml`.
 pub struct YamlBackend;
 
 impl StorageBackend for YamlBackend {
     fn read(&self, path: &Path) -> Result<Value> {
         let bytes = std::fs::read(path)?;
-        let yaml_val: serde_yaml::Value =
-            serde_yaml::from_slice(&bytes).map_err(|e| Error::Storage(e.to_string()))?;
+        let yaml_val: serde_yml::Value =
+            serde_yml::from_slice(&bytes).map_err(|e| Error::Storage(e.to_string()))?;
         // Direct conversion via serde avoids an intermediate JSON string round-trip.
         let value: Value =
             serde_json::to_value(yaml_val).map_err(|e| Error::Storage(e.to_string()))?;
@@ -104,33 +106,33 @@ impl StorageBackend for YamlBackend {
     }
 
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
-        let yaml_val: serde_yaml::Value =
-            serde_yaml::to_value(value).map_err(|e| Error::Storage(e.to_string()))?;
-        let bytes = serde_yaml::to_string(&yaml_val).map_err(|e| Error::Storage(e.to_string()))?;
+        let yaml_val: serde_yml::Value =
+            serde_yml::to_value(value).map_err(|e| Error::Storage(e.to_string()))?;
+        let bytes = serde_yml::to_string(&yaml_val).map_err(|e| Error::Storage(e.to_string()))?;
         write_file_safely(path, bytes.as_bytes())
     }
 }
 
-/// Unencrypted binary storage backend using `bincode`.
-/// The on-disk format is a bincode-encoded `Vec<u8>` of the JSON bytes.
+/// Unencrypted binary storage backend.
 ///
-/// NOTE: This format is not encrypted. Use `BinaryEncryptedBackend` when
-/// confidentiality is required.
+/// Stores a compact (non-pretty) JSON representation of the value.
+/// Use `BinaryEncryptedBackend` when confidentiality is required.
+///
+/// NOTE: This format differs from the bincode-wrapped format used before v0.2.3.
+/// Existing unencrypted binary files written by earlier versions must be
+/// re-created after upgrading.
 pub struct BinaryBackend;
 
 impl StorageBackend for BinaryBackend {
     fn read(&self, path: &Path) -> Result<Value> {
         let bytes = std::fs::read(path)?;
-        let json_bytes: Vec<u8> =
-            bincode::deserialize(&bytes).map_err(|e| Error::Storage(e.to_string()))?;
         let value: Value =
-            serde_json::from_slice(&json_bytes).map_err(|e| Error::Storage(e.to_string()))?;
+            serde_json::from_slice(&bytes).map_err(|e| Error::Storage(e.to_string()))?;
         Ok(value)
     }
 
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
-        let json_bytes = serde_json::to_vec(value)?;
-        let bytes = bincode::serialize(&json_bytes).map_err(|e| Error::Storage(e.to_string()))?;
+        let bytes = serde_json::to_vec(value)?;
         write_file_safely(path, &bytes)
     }
 }
@@ -190,7 +192,7 @@ impl StorageBackend for BinaryEncryptedBackend {
         let json_bytes = serde_json::to_vec(value)?;
 
         let mut nonce_bytes = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = XNonce::from_slice(&nonce_bytes);
 
         let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.key));
@@ -207,19 +209,19 @@ impl StorageBackend for BinaryEncryptedBackend {
     }
 }
 
-/// Returns a boxed file backend for provider kinds that are file-based.
-pub fn file_backend_for(
-    kind: &ProviderKind,
-    encryption_key: Option<&str>,
-) -> Result<Box<dyn StorageBackend>> {
-    match kind {
-        ProviderKind::Json => Ok(Box::new(JsonBackend)),
-        ProviderKind::Yml => Ok(Box::new(YamlBackend)),
-        ProviderKind::Binary => match encryption_key {
+/// Returns a boxed file backend for the given normalized provider.
+///
+/// Returns an error if called with `NormalizedProvider::Sqlite`, which must be
+/// handled by the dedicated SQLite read/write APIs.
+pub fn file_backend_for(provider: &NormalizedProvider) -> Result<Box<dyn StorageBackend>> {
+    match provider {
+        NormalizedProvider::Json => Ok(Box::new(JsonBackend)),
+        NormalizedProvider::Yml => Ok(Box::new(YamlBackend)),
+        NormalizedProvider::Binary { encryption_key } => match encryption_key.as_deref() {
             Some(key) => Ok(Box::new(BinaryEncryptedBackend::new(key))),
             None => Ok(Box::new(BinaryBackend)),
         },
-        ProviderKind::Sqlite => Err(Error::InvalidPayload(
+        NormalizedProvider::Sqlite { .. } => Err(Error::InvalidPayload(
             "sqlite provider must be handled by sqlite read/write APIs".to_string(),
         )),
     }
@@ -246,38 +248,6 @@ fn sql_type_for(value_type: &SqliteValueType) -> &'static str {
         SqliteValueType::String => "TEXT",
         SqliteValueType::Number => "REAL",
         SqliteValueType::Boolean => "INTEGER",
-    }
-}
-
-fn get_dotpath_value<'a>(value: &'a Value, dotpath: &str) -> Option<&'a Value> {
-    let mut current = value;
-    for part in dotpath.split('.') {
-        current = current.get(part)?;
-    }
-    Some(current)
-}
-
-fn set_dotpath_value(root: &mut Value, dotpath: &str, new_val: Value) {
-    if !root.is_object() {
-        *root = Value::Object(Map::new());
-    }
-
-    let mut current = root;
-    let mut parts = dotpath.split('.').peekable();
-
-    while let Some(part) = parts.next() {
-        if parts.peek().is_none() {
-            if let Value::Object(map) = current {
-                map.insert(part.to_string(), new_val);
-            }
-            return;
-        }
-
-        if let Value::Object(map) = current {
-            current = map
-                .entry(part.to_string())
-                .or_insert_with(|| Value::Object(Map::new()));
-        }
     }
 }
 
@@ -461,7 +431,7 @@ pub fn write_sqlite(
     for column in schema_columns {
         let column_name = sanitize_ident(&column.column_name, "schema column name")?;
         col_names.push(column_name);
-        let dot_val = get_dotpath_value(value, &column.dotpath);
+        let dot_val = dotpath::get(value, &column.dotpath);
         bind_values.push(json_to_sql_value(
             dot_val,
             &column.value_type,
@@ -573,7 +543,8 @@ pub fn read_sqlite(
             .get_ref(idx)
             .map_err(|e| Error::Storage(e.to_string()))?;
         let json_val = sql_to_json_value(value_ref, &column.value_type, column.is_keyring);
-        set_dotpath_value(&mut out, &column.dotpath, json_val);
+        dotpath::set(&mut out, &column.dotpath, json_val)
+            .map_err(|e| Error::Storage(e.to_string()))?;
     }
 
     Ok(out)

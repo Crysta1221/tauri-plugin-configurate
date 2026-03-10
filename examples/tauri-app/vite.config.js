@@ -16,9 +16,16 @@ export default defineConfig({
     // This avoids the need to run `rollup -c` before every `tauri dev` session
     // and prevents stale pnpm / Vite pre-bundle cache issues that would
     // otherwise surface as "_keyringBrand is not defined" errors.
-    alias: {
-      "tauri-plugin-configurate-api": path.resolve(__dirname, "../../guest-js/index.ts"),
-    },
+    alias: [
+      {
+        find: /^tauri-plugin-configurate-api\/provider$/,
+        replacement: path.resolve(__dirname, "../../guest-js/provider.ts"),
+      },
+      {
+        find: /^tauri-plugin-configurate-api$/,
+        replacement: path.resolve(__dirname, "../../guest-js/index.ts"),
+      },
+    ],
     preserveSymlinks: true,
   },
 
