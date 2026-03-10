@@ -118,13 +118,17 @@ pub struct ConfiguratePayload {
     pub with_unlock: bool,
 }
 
-/// Normalized provider used internally.
+/// Normalized provider used internally after payload normalization.
+///
+/// Each variant carries only the fields that are meaningful for that provider,
+/// eliminating the spurious `db_name`/`table_name` on non-SQLite providers and
+/// the spurious `encryption_key` on non-Binary providers.
 #[derive(Debug, Clone)]
-pub struct NormalizedProvider {
-    pub kind: ProviderKind,
-    pub encryption_key: Option<String>,
-    pub db_name: String,
-    pub table_name: String,
+pub enum NormalizedProvider {
+    Json,
+    Yml,
+    Binary { encryption_key: Option<String> },
+    Sqlite { db_name: String, table_name: String },
 }
 
 /// Normalized payload used internally across all commands.
@@ -161,47 +165,56 @@ impl ConfiguratePayload {
 
         let provider = match self.provider {
             Some(provider) => {
-                let encryption_key = match provider.kind {
-                    ProviderKind::Binary => provider.encryption_key.or(self.encryption_key),
-                    _ => None,
-                };
+                // Validate early: encryptionKey is only meaningful for Binary.
+                // Previously this check was at the bottom as dead code for this branch
+                // because encryption_key was already set to None before the check.
+                let is_binary_provider = matches!(&provider.kind, ProviderKind::Binary);
+                if !is_binary_provider
+                    && (provider.encryption_key.is_some() || self.encryption_key.is_some())
+                {
+                    return Err(Error::InvalidPayload(
+                        "encryptionKey is only supported with provider.kind='binary'".to_string(),
+                    ));
+                }
 
-                NormalizedProvider {
-                    kind: provider.kind,
-                    encryption_key,
-                    db_name: provider
-                        .db_name
-                        .unwrap_or_else(|| DEFAULT_SQLITE_DB_NAME.to_string()),
-                    table_name: provider
-                        .table_name
-                        .unwrap_or_else(|| DEFAULT_SQLITE_TABLE_NAME.to_string()),
+                match provider.kind {
+                    ProviderKind::Json => NormalizedProvider::Json,
+                    ProviderKind::Yml => NormalizedProvider::Yml,
+                    ProviderKind::Binary => NormalizedProvider::Binary {
+                        encryption_key: provider.encryption_key.or(self.encryption_key),
+                    },
+                    ProviderKind::Sqlite => NormalizedProvider::Sqlite {
+                        db_name: provider
+                            .db_name
+                            .unwrap_or_else(|| DEFAULT_SQLITE_DB_NAME.to_string()),
+                        table_name: provider
+                            .table_name
+                            .unwrap_or_else(|| DEFAULT_SQLITE_TABLE_NAME.to_string()),
+                    },
                 }
             }
             None => {
+                // Legacy API path: `format` + optional `encryptionKey`.
                 let format = self
                     .format
                     .ok_or_else(|| Error::InvalidPayload("missing provider/format".to_string()))?;
 
-                let kind = match format {
-                    StorageFormat::Json => ProviderKind::Json,
-                    StorageFormat::Yaml => ProviderKind::Yml,
-                    StorageFormat::Binary => ProviderKind::Binary,
-                };
+                // Validate encryptionKey for the legacy path.
+                if !matches!(format, StorageFormat::Binary) && self.encryption_key.is_some() {
+                    return Err(Error::InvalidPayload(
+                        "encryptionKey is only supported with provider.kind='binary'".to_string(),
+                    ));
+                }
 
-                NormalizedProvider {
-                    kind,
-                    encryption_key: self.encryption_key,
-                    db_name: DEFAULT_SQLITE_DB_NAME.to_string(),
-                    table_name: DEFAULT_SQLITE_TABLE_NAME.to_string(),
+                match format {
+                    StorageFormat::Json => NormalizedProvider::Json,
+                    StorageFormat::Yaml => NormalizedProvider::Yml,
+                    StorageFormat::Binary => NormalizedProvider::Binary {
+                        encryption_key: self.encryption_key,
+                    },
                 }
             }
         };
-
-        if !matches!(provider.kind, ProviderKind::Binary) && provider.encryption_key.is_some() {
-            return Err(Error::InvalidPayload(
-                "encryptionKey is only supported with provider.kind='binary'".to_string(),
-            ));
-        }
 
         Ok(NormalizedConfiguratePayload {
             file_name,
@@ -268,4 +281,72 @@ pub enum BatchEntryResult {
 #[derive(Debug, Serialize)]
 pub struct BatchRunResult {
     pub results: std::collections::BTreeMap<String, BatchEntryResult>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_payload() -> ConfiguratePayload {
+        ConfiguratePayload {
+            file_name: Some("app.json".to_string()),
+            base_dir: Some(BaseDirectory::AppConfig),
+            options: None,
+            provider: None,
+            schema_columns: Vec::new(),
+            name: None,
+            dir: None,
+            dir_name: None,
+            path: None,
+            format: None,
+            encryption_key: None,
+            data: None,
+            keyring_entries: None,
+            keyring_options: None,
+            with_unlock: false,
+        }
+    }
+
+    #[test]
+    fn normalize_rejects_legacy_encryption_key_with_non_binary_provider() {
+        let mut payload = base_payload();
+        payload.provider = Some(ProviderPayload {
+            kind: ProviderKind::Json,
+            encryption_key: None,
+            db_name: None,
+            table_name: None,
+        });
+        payload.encryption_key = Some("legacy-key".to_string());
+
+        let err = payload.normalize().expect_err("expected invalid payload");
+        match err {
+            Error::InvalidPayload(msg) => {
+                assert_eq!(
+                    msg,
+                    "encryptionKey is only supported with provider.kind='binary'"
+                );
+            }
+            _ => panic!("unexpected error variant"),
+        }
+    }
+
+    #[test]
+    fn normalize_allows_legacy_encryption_key_with_binary_provider() {
+        let mut payload = base_payload();
+        payload.provider = Some(ProviderPayload {
+            kind: ProviderKind::Binary,
+            encryption_key: None,
+            db_name: None,
+            table_name: None,
+        });
+        payload.encryption_key = Some("legacy-key".to_string());
+
+        let normalized = payload.normalize().expect("expected valid payload");
+        match normalized.provider {
+            NormalizedProvider::Binary { encryption_key } => {
+                assert_eq!(encryption_key.as_deref(), Some("legacy-key"));
+            }
+            _ => panic!("unexpected provider variant"),
+        }
+    }
 }

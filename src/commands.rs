@@ -9,8 +9,8 @@ use crate::error::{Error, Result};
 use crate::keyring_store;
 use crate::models::{
     BatchEntryFailure, BatchEntryResult, BatchEntrySuccess, BatchPayload, BatchRunResult,
-    ConfiguratePayload, KeyringEntry, KeyringOptions, NormalizedConfiguratePayload, ProviderKind,
-    UnlockPayload,
+    ConfiguratePayload, KeyringEntry, KeyringOptions, NormalizedConfiguratePayload,
+    NormalizedProvider, UnlockPayload,
 };
 use crate::storage;
 
@@ -149,14 +149,19 @@ fn resolve_sqlite_db_path<R: Runtime>(
     app: &AppHandle<R>,
     payload: &NormalizedConfiguratePayload,
 ) -> Result<PathBuf> {
-    validate_file_name(&payload.provider.db_name)?;
+    let NormalizedProvider::Sqlite { db_name, .. } = &payload.provider else {
+        return Err(Error::InvalidPayload(
+            "resolve_sqlite_db_path called for non-sqlite provider".to_string(),
+        ));
+    };
+    validate_file_name(db_name)?;
     let root = resolve_root(
         app,
         payload.base_dir,
         payload.dir_name.as_deref(),
         payload.current_path.as_deref(),
     )?;
-    Ok(root.join(&payload.provider.db_name))
+    Ok(root.join(db_name))
 }
 
 /// Writes keyring entries to the OS keyring and nullifies the corresponding
@@ -217,21 +222,18 @@ fn load_plain_data<R: Runtime>(
     app: &AppHandle<R>,
     payload: &NormalizedConfiguratePayload,
 ) -> Result<Value> {
-    match payload.provider.kind {
-        ProviderKind::Sqlite => {
+    match &payload.provider {
+        NormalizedProvider::Sqlite { table_name, .. } => {
             let db_path = resolve_sqlite_db_path(app, payload)?;
             storage::read_sqlite(
                 &db_path,
-                &payload.provider.table_name,
+                table_name,
                 &payload.file_name,
                 &payload.schema_columns,
             )
         }
         _ => {
-            let backend = storage::file_backend_for(
-                &payload.provider.kind,
-                payload.provider.encryption_key.as_deref(),
-            )?;
+            let backend = storage::file_backend_for(&payload.provider)?;
             let path = resolve_file_path(app, payload)?;
             backend.read(&path)
         }
@@ -243,22 +245,19 @@ fn save_plain_data<R: Runtime>(
     payload: &NormalizedConfiguratePayload,
     data: &Value,
 ) -> Result<()> {
-    match payload.provider.kind {
-        ProviderKind::Sqlite => {
+    match &payload.provider {
+        NormalizedProvider::Sqlite { table_name, .. } => {
             let db_path = resolve_sqlite_db_path(app, payload)?;
             storage::write_sqlite(
                 &db_path,
-                &payload.provider.table_name,
+                table_name,
                 &payload.file_name,
                 data,
                 &payload.schema_columns,
             )
         }
         _ => {
-            let backend = storage::file_backend_for(
-                &payload.provider.kind,
-                payload.provider.encryption_key.as_deref(),
-            )?;
+            let backend = storage::file_backend_for(&payload.provider)?;
             let path = resolve_file_path(app, payload)?;
             backend.write(&path, data)
         }
@@ -269,12 +268,12 @@ fn delete_plain_data<R: Runtime>(
     app: &AppHandle<R>,
     payload: &NormalizedConfiguratePayload,
 ) -> Result<()> {
-    match payload.provider.kind {
-        ProviderKind::Sqlite => {
+    match &payload.provider {
+        NormalizedProvider::Sqlite { table_name, .. } => {
             let db_path = resolve_sqlite_db_path(app, payload)?;
             storage::delete_sqlite(
                 &db_path,
-                &payload.provider.table_name,
+                table_name,
                 &payload.file_name,
                 &payload.schema_columns,
             )
@@ -366,11 +365,17 @@ fn execute_delete<R: Runtime>(
 ) -> Result<()> {
     // Delete keyring entries first so secrets are wiped even if the main
     // storage removal fails. All entries are attempted regardless of errors.
+    // Failures are logged as warnings so partial cleanup is visible to developers.
     if let Some((entries, opts)) =
         keyring_pair("delete", &payload.keyring_entries, &payload.keyring_options)?
     {
         for entry in entries {
-            let _ = keyring_store::delete(opts, &entry.id);
+            if let Err(e) = keyring_store::delete(opts, &entry.id) {
+                eprintln!(
+                    "[tauri-plugin-configurate] warning: failed to delete keyring entry '{}': {}",
+                    entry.id, e
+                );
+            }
         }
     }
 

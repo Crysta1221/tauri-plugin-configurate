@@ -56,6 +56,16 @@ pub fn set(root: &mut Value, path: &str, new_val: Value) -> Result<()> {
     unreachable!("path '{}' was not resolved inside loop", path)
 }
 
+/// Returns a reference to the value at the given dot-separated `path` inside `root`.
+/// Returns `None` if any segment is missing or if an intermediate node is not an object.
+pub fn get<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = root;
+    for part in path.split('.') {
+        current = current.get(part)?;
+    }
+    Some(current)
+}
+
 /// Replaces the value at the given dot-separated `path` inside `root` with `null`.
 pub fn nullify(root: &mut Value, path: &str) -> Result<()> {
     set(root, path, Value::Null)
