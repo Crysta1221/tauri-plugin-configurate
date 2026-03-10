@@ -3,10 +3,14 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
-use serde_json::Value;
+use rusqlite::types::{Value as SqlValue, ValueRef};
+use rusqlite::{params_from_iter, Connection};
+use serde_json::{Map, Number, Value};
 
 use crate::error::{Error, Result};
-use crate::models::StorageFormat;
+use crate::models::{ProviderKind, SqliteColumn, SqliteValueType};
+
+const SQLITE_JSON_BLOB_COLUMN: &str = "__config_json_blob";
 
 /// Writes bytes to `path` using a temporary sibling file and rename.
 ///
@@ -102,8 +106,7 @@ impl StorageBackend for YamlBackend {
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
         let yaml_val: serde_yaml::Value =
             serde_yaml::to_value(value).map_err(|e| Error::Storage(e.to_string()))?;
-        let bytes =
-            serde_yaml::to_string(&yaml_val).map_err(|e| Error::Storage(e.to_string()))?;
+        let bytes = serde_yaml::to_string(&yaml_val).map_err(|e| Error::Storage(e.to_string()))?;
         write_file_safely(path, bytes.as_bytes())
     }
 }
@@ -127,8 +130,7 @@ impl StorageBackend for BinaryBackend {
 
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
         let json_bytes = serde_json::to_vec(value)?;
-        let bytes =
-            bincode::serialize(&json_bytes).map_err(|e| Error::Storage(e.to_string()))?;
+        let bytes = bincode::serialize(&json_bytes).map_err(|e| Error::Storage(e.to_string()))?;
         write_file_safely(path, &bytes)
     }
 }
@@ -139,7 +141,7 @@ impl StorageBackend for BinaryBackend {
 ///
 /// The 32-byte cipher key is derived from the caller-supplied key string via
 /// SHA-256, so any high-entropy string (e.g. a random key stored in the OS
-/// keyring) is suitable.  The Poly1305 tag provides authenticated encryption:
+/// keyring) is suitable. The Poly1305 tag provides authenticated encryption:
 /// any tampering with the ciphertext is detected at read time.
 pub struct BinaryEncryptedBackend {
     key: [u8; 32],
@@ -172,9 +174,9 @@ impl StorageBackend for BinaryEncryptedBackend {
         let ciphertext = &bytes[24..];
 
         let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.key));
-        let plaintext = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|_| Error::Storage("decryption failed: wrong key or corrupted data".to_string()))?;
+        let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+            Error::Storage("decryption failed: wrong key or corrupted data".to_string())
+        })?;
 
         let value: Value =
             serde_json::from_slice(&plaintext).map_err(|e| Error::Storage(e.to_string()))?;
@@ -205,22 +207,392 @@ impl StorageBackend for BinaryEncryptedBackend {
     }
 }
 
-/// Returns a boxed `StorageBackend` for the given `StorageFormat`.
-/// When `encryption_key` is `Some` and format is `Binary`, an authenticated
-/// XChaCha20-Poly1305 backend is returned; otherwise the plain binary backend
-/// is used for backward compatibility.
-pub fn backend_for(
-    format: &StorageFormat,
+/// Returns a boxed file backend for provider kinds that are file-based.
+pub fn file_backend_for(
+    kind: &ProviderKind,
     encryption_key: Option<&str>,
-) -> Box<dyn StorageBackend> {
-    match format {
-        StorageFormat::Json => Box::new(JsonBackend),
-        StorageFormat::Yaml => Box::new(YamlBackend),
-        StorageFormat::Binary => match encryption_key {
-            Some(key) => Box::new(BinaryEncryptedBackend::new(key)),
-            None => Box::new(BinaryBackend),
+) -> Result<Box<dyn StorageBackend>> {
+    match kind {
+        ProviderKind::Json => Ok(Box::new(JsonBackend)),
+        ProviderKind::Yml => Ok(Box::new(YamlBackend)),
+        ProviderKind::Binary => match encryption_key {
+            Some(key) => Ok(Box::new(BinaryEncryptedBackend::new(key))),
+            None => Ok(Box::new(BinaryBackend)),
         },
+        ProviderKind::Sqlite => Err(Error::InvalidPayload(
+            "sqlite provider must be handled by sqlite read/write APIs".to_string(),
+        )),
     }
+}
+
+fn sanitize_ident(name: &str, what: &str) -> Result<String> {
+    if name.is_empty() {
+        return Err(Error::InvalidPayload(format!("{} must not be empty", what)));
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return Err(Error::InvalidPayload(format!(
+            "invalid {} '{}': only [A-Za-z0-9_] is allowed",
+            what, name
+        )));
+    }
+    Ok(name.to_string())
+}
+
+fn sql_type_for(value_type: &SqliteValueType) -> &'static str {
+    match value_type {
+        SqliteValueType::String => "TEXT",
+        SqliteValueType::Number => "REAL",
+        SqliteValueType::Boolean => "INTEGER",
+    }
+}
+
+fn get_dotpath_value<'a>(value: &'a Value, dotpath: &str) -> Option<&'a Value> {
+    let mut current = value;
+    for part in dotpath.split('.') {
+        current = current.get(part)?;
+    }
+    Some(current)
+}
+
+fn set_dotpath_value(root: &mut Value, dotpath: &str, new_val: Value) {
+    if !root.is_object() {
+        *root = Value::Object(Map::new());
+    }
+
+    let mut current = root;
+    let mut parts = dotpath.split('.').peekable();
+
+    while let Some(part) = parts.next() {
+        if parts.peek().is_none() {
+            if let Value::Object(map) = current {
+                map.insert(part.to_string(), new_val);
+            }
+            return;
+        }
+
+        if let Value::Object(map) = current {
+            current = map
+                .entry(part.to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+        }
+    }
+}
+
+fn ensure_sqlite_parent_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn ensure_sqlite_table(
+    conn: &Connection,
+    table_name: &str,
+    schema_columns: &[SqliteColumn],
+) -> Result<()> {
+    let table_name = sanitize_ident(table_name, "tableName")?;
+
+    if schema_columns.is_empty() {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS \"{}\" (
+                \"config_key\" TEXT PRIMARY KEY,
+                \"{}\" TEXT
+            )",
+            table_name, SQLITE_JSON_BLOB_COLUMN
+        );
+        conn.execute(&sql, [])
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        return Ok(());
+    }
+
+    let mut column_defs: Vec<String> = Vec::with_capacity(schema_columns.len());
+    for column in schema_columns {
+        let name = sanitize_ident(&column.column_name, "schema column name")?;
+        column_defs.push(format!("\"{}\" {}", name, sql_type_for(&column.value_type)));
+    }
+
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS \"{}\" (
+            \"config_key\" TEXT PRIMARY KEY,
+            {}
+        )",
+        table_name,
+        column_defs.join(",")
+    );
+
+    conn.execute(&sql, [])
+        .map_err(|e| Error::Storage(e.to_string()))?;
+
+    let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name);
+    let mut stmt = conn
+        .prepare(&pragma_sql)
+        .map_err(|e| Error::Storage(e.to_string()))?;
+
+    let existing_cols_iter = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| Error::Storage(e.to_string()))?;
+
+    let mut existing = std::collections::BTreeSet::new();
+    for col in existing_cols_iter {
+        existing.insert(col.map_err(|e| Error::Storage(e.to_string()))?);
+    }
+
+    for column in schema_columns {
+        let name = sanitize_ident(&column.column_name, "schema column name")?;
+        if existing.contains(&name) {
+            continue;
+        }
+        let alter = format!(
+            "ALTER TABLE \"{}\" ADD COLUMN \"{}\" {}",
+            table_name,
+            name,
+            sql_type_for(&column.value_type)
+        );
+        conn.execute(&alter, [])
+            .map_err(|e| Error::Storage(e.to_string()))?;
+    }
+
+    Ok(())
+}
+
+fn json_to_sql_value(
+    value: Option<&Value>,
+    value_type: &SqliteValueType,
+    is_keyring: bool,
+) -> SqlValue {
+    if is_keyring {
+        return SqlValue::Null;
+    }
+
+    match value {
+        None | Some(Value::Null) => SqlValue::Null,
+        Some(Value::Bool(b)) => SqlValue::Integer(if *b { 1 } else { 0 }),
+        Some(Value::Number(num)) => SqlValue::Real(num.as_f64().unwrap_or(0.0)),
+        Some(Value::String(s)) => match value_type {
+            SqliteValueType::Number => s
+                .parse::<f64>()
+                .map(SqlValue::Real)
+                .unwrap_or_else(|_| SqlValue::Text(s.clone())),
+            SqliteValueType::Boolean => match s.as_str() {
+                "true" => SqlValue::Integer(1),
+                "false" => SqlValue::Integer(0),
+                _ => SqlValue::Text(s.clone()),
+            },
+            SqliteValueType::String => SqlValue::Text(s.clone()),
+        },
+        Some(Value::Array(arr)) => SqlValue::Text(serde_json::to_string(arr).unwrap_or_default()),
+        Some(Value::Object(obj)) => SqlValue::Text(serde_json::to_string(obj).unwrap_or_default()),
+    }
+}
+
+fn sql_to_json_value(
+    value_ref: ValueRef<'_>,
+    value_type: &SqliteValueType,
+    is_keyring: bool,
+) -> Value {
+    if is_keyring {
+        return Value::Null;
+    }
+
+    match value_ref {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(v) => match value_type {
+            SqliteValueType::Boolean => Value::Bool(v != 0),
+            SqliteValueType::Number => {
+                Value::Number(Number::from_f64(v as f64).unwrap_or_else(|| Number::from(0)))
+            }
+            SqliteValueType::String => Value::String(v.to_string()),
+        },
+        ValueRef::Real(v) => match value_type {
+            SqliteValueType::Boolean => Value::Bool(v != 0.0),
+            SqliteValueType::Number => {
+                Value::Number(Number::from_f64(v).unwrap_or_else(|| Number::from(0)))
+            }
+            SqliteValueType::String => Value::String(v.to_string()),
+        },
+        ValueRef::Text(bytes) => {
+            let text = String::from_utf8_lossy(bytes).to_string();
+            let trimmed = text.trim_start();
+            if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                if let Ok(json_val) = serde_json::from_str::<Value>(&text) {
+                    return json_val;
+                }
+            }
+            Value::String(text)
+        }
+        ValueRef::Blob(bytes) => Value::String(String::from_utf8_lossy(bytes).to_string()),
+    }
+}
+
+/// Writes one config entry into SQLite.
+pub fn write_sqlite(
+    db_path: &Path,
+    table_name: &str,
+    config_key: &str,
+    value: &Value,
+    schema_columns: &[SqliteColumn],
+) -> Result<()> {
+    ensure_sqlite_parent_dir(db_path)?;
+    let conn = Connection::open(db_path).map_err(|e| Error::Storage(e.to_string()))?;
+
+    ensure_sqlite_table(&conn, table_name, schema_columns)?;
+
+    let table_name = sanitize_ident(table_name, "tableName")?;
+
+    if schema_columns.is_empty() {
+        let json_text = serde_json::to_string(value).map_err(|e| Error::Storage(e.to_string()))?;
+        let sql = format!(
+            "INSERT INTO \"{}\" (\"config_key\", \"{}\") VALUES (?, ?)
+            ON CONFLICT(\"config_key\") DO UPDATE SET \"{}\"=excluded.\"{}\"",
+            table_name, SQLITE_JSON_BLOB_COLUMN, SQLITE_JSON_BLOB_COLUMN, SQLITE_JSON_BLOB_COLUMN
+        );
+        conn.execute(&sql, [config_key, json_text.as_str()])
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        return Ok(());
+    }
+
+    let mut col_names = Vec::with_capacity(schema_columns.len());
+    let mut bind_values: Vec<SqlValue> = Vec::with_capacity(schema_columns.len() + 1);
+    bind_values.push(SqlValue::Text(config_key.to_string()));
+
+    for column in schema_columns {
+        let column_name = sanitize_ident(&column.column_name, "schema column name")?;
+        col_names.push(column_name);
+        let dot_val = get_dotpath_value(value, &column.dotpath);
+        bind_values.push(json_to_sql_value(
+            dot_val,
+            &column.value_type,
+            column.is_keyring,
+        ));
+    }
+
+    let insert_columns = std::iter::once("\"config_key\"".to_string())
+        .chain(col_names.iter().map(|n| format!("\"{}\"", n)))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let placeholders = (0..(col_names.len() + 1))
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let update_clause = col_names
+        .iter()
+        .map(|n| format!("\"{}\"=excluded.\"{}\"", n, n))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let sql = format!(
+        "INSERT INTO \"{}\" ({}) VALUES ({})
+        ON CONFLICT(\"config_key\") DO UPDATE SET {}",
+        table_name, insert_columns, placeholders, update_clause
+    );
+
+    conn.execute(&sql, params_from_iter(bind_values.iter()))
+        .map_err(|e| Error::Storage(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Reads one config entry from SQLite.
+pub fn read_sqlite(
+    db_path: &Path,
+    table_name: &str,
+    config_key: &str,
+    schema_columns: &[SqliteColumn],
+) -> Result<Value> {
+    let conn = Connection::open(db_path).map_err(|e| Error::Storage(e.to_string()))?;
+    ensure_sqlite_table(&conn, table_name, schema_columns)?;
+
+    let table_name = sanitize_ident(table_name, "tableName")?;
+
+    if schema_columns.is_empty() {
+        let sql = format!(
+            "SELECT \"{}\" FROM \"{}\" WHERE \"config_key\" = ?1",
+            SQLITE_JSON_BLOB_COLUMN, table_name
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([config_key])
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| Error::Storage(e.to_string()))? {
+            let json_text: Option<String> =
+                row.get(0).map_err(|e| Error::Storage(e.to_string()))?;
+            let json_text = json_text.ok_or_else(|| {
+                Error::Storage(format!(
+                    "sqlite config '{}' has no stored JSON value",
+                    config_key
+                ))
+            })?;
+            return serde_json::from_str::<Value>(&json_text)
+                .map_err(|e| Error::Storage(e.to_string()));
+        }
+
+        return Err(Error::Storage(format!(
+            "sqlite config '{}' was not found",
+            config_key
+        )));
+    }
+
+    let select_columns = schema_columns
+        .iter()
+        .map(|c| sanitize_ident(&c.column_name, "schema column name"))
+        .collect::<Result<Vec<_>>>()?
+        .iter()
+        .map(|n| format!("\"{}\"", n))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let sql = format!(
+        "SELECT {} FROM \"{}\" WHERE \"config_key\" = ?1",
+        select_columns, table_name
+    );
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    let mut rows = stmt
+        .query([config_key])
+        .map_err(|e| Error::Storage(e.to_string()))?;
+
+    let Some(row) = rows.next().map_err(|e| Error::Storage(e.to_string()))? else {
+        return Err(Error::Storage(format!(
+            "sqlite config '{}' was not found",
+            config_key
+        )));
+    };
+
+    let mut out = Value::Object(Map::new());
+    for (idx, column) in schema_columns.iter().enumerate() {
+        let value_ref = row
+            .get_ref(idx)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let json_val = sql_to_json_value(value_ref, &column.value_type, column.is_keyring);
+        set_dotpath_value(&mut out, &column.dotpath, json_val);
+    }
+
+    Ok(out)
+}
+
+/// Deletes one config entry from SQLite by config key.
+pub fn delete_sqlite(
+    db_path: &Path,
+    table_name: &str,
+    config_key: &str,
+    schema_columns: &[SqliteColumn],
+) -> Result<()> {
+    let conn = Connection::open(db_path).map_err(|e| Error::Storage(e.to_string()))?;
+    ensure_sqlite_table(&conn, table_name, schema_columns)?;
+    let table_name = sanitize_ident(table_name, "tableName")?;
+    let sql = format!("DELETE FROM \"{}\" WHERE \"config_key\" = ?1", table_name);
+    conn.execute(&sql, [config_key])
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -278,42 +650,41 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_wrong_key_errors() {
+    fn sqlite_roundtrip_with_schema_columns() {
         let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "test.binc");
-        let writer = BinaryEncryptedBackend::new("correct-key");
-        let reader = BinaryEncryptedBackend::new("wrong-key");
-        let data = json!({"secret": "value"});
-        writer.write(&path, &data).unwrap();
-        assert!(reader.read(&path).is_err());
-    }
+        let path = tmp_path(&dir, "cfg.db");
 
-    #[test]
-    fn encrypted_too_short_errors() {
-        let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "short.binc");
-        std::fs::write(&path, b"short").unwrap();
-        let backend = BinaryEncryptedBackend::new("key");
-        assert!(backend.read(&path).is_err());
-    }
+        let columns = vec![
+            SqliteColumn {
+                column_name: "theme".to_string(),
+                dotpath: "theme".to_string(),
+                value_type: SqliteValueType::String,
+                is_keyring: false,
+            },
+            SqliteColumn {
+                column_name: "enabled".to_string(),
+                dotpath: "enabled".to_string(),
+                value_type: SqliteValueType::Boolean,
+                is_keyring: false,
+            },
+            SqliteColumn {
+                column_name: "secret".to_string(),
+                dotpath: "secret".to_string(),
+                value_type: SqliteValueType::String,
+                is_keyring: true,
+            },
+        ];
 
-    #[test]
-    fn write_creates_parent_dirs() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("nested").join("path").join("test.json");
-        let backend = JsonBackend;
-        backend.write(&path, &json!({"x": 1})).unwrap();
-        assert!(path.exists());
-    }
+        let value = json!({
+            "theme": "dark",
+            "enabled": true,
+            "secret": null,
+        });
 
-    #[test]
-    fn write_is_idempotent() {
-        let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "idempotent.json");
-        let backend = JsonBackend;
-        backend.write(&path, &json!({"v": 1})).unwrap();
-        backend.write(&path, &json!({"v": 2})).unwrap();
-        let loaded = backend.read(&path).unwrap();
-        assert_eq!(loaded["v"], 2);
+        write_sqlite(&path, "configurate_configs", "app.json", &value, &columns).unwrap();
+        let loaded = read_sqlite(&path, "configurate_configs", "app.json", &columns).unwrap();
+        assert_eq!(loaded["theme"], "dark");
+        assert_eq!(loaded["enabled"], true);
+        assert_eq!(loaded["secret"], Value::Null);
     }
 }

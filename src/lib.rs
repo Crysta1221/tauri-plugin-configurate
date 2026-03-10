@@ -1,6 +1,6 @@
 use tauri::{
-  plugin::{Builder, TauriPlugin},
-  Manager, Runtime,
+    plugin::{Builder, TauriPlugin},
+    Manager, Runtime,
 };
 
 pub use models::*;
@@ -44,6 +44,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::load,
             commands::save,
             commands::delete,
+            commands::load_all,
+            commands::save_all,
             commands::unlock,
         ])
         .setup(|app, api| {

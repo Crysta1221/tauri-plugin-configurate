@@ -3,11 +3,11 @@ export { BaseDirectory } from "@tauri-apps/api/path";
 import type { BaseDirectory } from "@tauri-apps/api/path";
 
 // ---------------------------------------------------------------------------
-// Storage format
+// Storage format (legacy compatibility)
 // ---------------------------------------------------------------------------
 
-/** Supported on-disk storage formats **/
-export type StorageFormat = "json" | "yaml" | "binary";
+/** Legacy format options accepted by the compatibility layer. */
+export type StorageFormat = "json" | "yaml" | "yml" | "binary";
 
 // ---------------------------------------------------------------------------
 // Keyring marker types
@@ -17,11 +17,7 @@ export type StorageFormat = "json" | "yaml" | "binary";
  * Brand key used to tag keyring-protected fields at runtime.
  *
  * A plain string property is used instead of a `Symbol` because some bundlers
- * (Vite / esbuild pre-bundling) incorrectly hoist computed `Symbol` property
- * keys out of scope, causing `_keyringBrand is not defined` errors at runtime.
- *
- * The string is long and namespaced to avoid accidental collisions with
- * user-defined keys.
+ * can hoist computed `Symbol` property keys out of scope.
  */
 const KEYRING_BRAND_KEY = "__configurate_keyring__" as const;
 
@@ -30,8 +26,8 @@ declare const _keyringBrandTag: unique symbol;
 
 /**
  * Marker type produced by `keyring()`.
- * `T`  – the runtime type of the secret value.
- * `Id` – the literal string id used to key the OS keyring entry.
+ * `T`  – runtime value type.
+ * `Id` – literal keyring id.
  */
 export type KeyringField<T, Id extends string> = {
   readonly [_keyringBrandTag]?: true;
@@ -41,30 +37,16 @@ export type KeyringField<T, Id extends string> = {
 
 /** Options required when creating a keyring-protected field definition. */
 export interface KeyringFieldOptions<Id extends string> {
-  /** Unique identifier for this keyring entry. Must be unique within a schema. */
   id: Id;
 }
 
 /**
  * Marks a schema field as keyring-protected.
- *
- * @example
- * ```ts
- * const schema = defineConfig({
- *   apiKey: keyring(String, { id: "api-key" }),
- * });
- * ```
  */
 export function keyring<T, Id extends string>(
   _type: abstract new (...args: never[]) => T | ((...args: never[]) => T),
   opts: KeyringFieldOptions<Id>,
 ): KeyringField<T, Id> {
-  // Avoid computed property key syntax `{ [KEYRING_BRAND_KEY]: true }` in an
-  // object literal.  Some bundlers (Vite / esbuild pre-bundling) incorrectly
-  // hoist the evaluated key expression out of the enclosing function scope,
-  // producing a "X is not defined" ReferenceError at runtime.
-  // Assigning via bracket notation after construction is semantically
-  // identical but is never subject to that hoisting behaviour.
   const field = { _type: undefined as unknown as T, _id: opts.id } as Record<
     string,
     unknown
@@ -77,13 +59,11 @@ export function keyring<T, Id extends string>(
 // Schema definition
 // ---------------------------------------------------------------------------
 
-/** Primitive constructor types supported in a schema definition. */
 type PrimitiveConstructor =
   | StringConstructor
   | NumberConstructor
   | BooleanConstructor;
 
-/** Maps a primitive constructor to its corresponding TS type. */
 type InferPrimitive<C> = C extends StringConstructor
   ? string
   : C extends NumberConstructor
@@ -92,23 +72,13 @@ type InferPrimitive<C> = C extends StringConstructor
       ? boolean
       : never;
 
-/** Any value that is valid inside a schema definition. */
 export type SchemaValue =
   | PrimitiveConstructor
   | KeyringField<unknown, string>
   | SchemaObject;
 
-/** A plain object whose values are all `SchemaValue`s. */
 export type SchemaObject = { [key: string]: SchemaValue };
 
-// ---------------------------------------------------------------------------
-// Collect all keyring ids from a schema (used for duplicate detection)
-// ---------------------------------------------------------------------------
-
-/**
- * Recursively collects every keyring id found anywhere inside a schema as a
- * union of string literals.
- */
 export type CollectKeyringIds<S extends SchemaObject> = {
   [K in keyof S]: S[K] extends KeyringField<unknown, infer Id>
     ? Id
@@ -117,35 +87,15 @@ export type CollectKeyringIds<S extends SchemaObject> = {
       : never;
 }[keyof S];
 
-/**
- * Produces `never` when a string literal `T` appears more than once inside
- * the union `All`. Used to detect duplicate keyring ids at compile time.
- *
- * The check works by removing `T` from `All` and seeing whether there are
- * still members left that match `T`.  If after exclusion some member equals
- * `T`, it means the original union contained `T` at least twice.
- */
 type IsDuplicate<T extends string, All extends string> =
   T extends Exclude<All, T> ? true : false;
 
-/**
- * Evaluates to `true` if any keyring id appears more than once in the
- * schema, `false` otherwise.
- */
 export type HasDuplicateKeyringIds<S extends SchemaObject> = true extends {
   [Id in CollectKeyringIds<S>]: IsDuplicate<Id, CollectKeyringIds<S>>;
 }[CollectKeyringIds<S>]
   ? true
   : false;
 
-// ---------------------------------------------------------------------------
-// Infer locked / unlocked config types from a schema
-// ---------------------------------------------------------------------------
-
-/**
- * Converts a schema into the "locked" config type where every
- * `KeyringField<T, Id>` becomes `null`.
- */
 export type InferLocked<S extends SchemaObject> = {
   [K in keyof S]: S[K] extends KeyringField<unknown, string>
     ? null
@@ -156,10 +106,6 @@ export type InferLocked<S extends SchemaObject> = {
         : never;
 };
 
-/**
- * Converts a schema into the "unlocked" config type where every
- * `KeyringField<T, Id>` is replaced with the actual secret type `T`.
- */
 export type InferUnlocked<S extends SchemaObject> = {
   [K in keyof S]: S[K] extends KeyringField<infer T, string>
     ? T
@@ -171,19 +117,83 @@ export type InferUnlocked<S extends SchemaObject> = {
 };
 
 // ---------------------------------------------------------------------------
+// Provider
+// ---------------------------------------------------------------------------
+
+type ProviderBrand = { readonly __configurateProviderBrand: true };
+
+type ProviderPayload =
+  | { kind: "json" }
+  | { kind: "yml" }
+  | { kind: "binary"; encryptionKey?: string }
+  | { kind: "sqlite"; dbName?: string; tableName?: string };
+
+export type ConfigurateProvider = ProviderBrand & Readonly<ProviderPayload>;
+
+const PROVIDER_BRAND_KEY = "__configurateProviderBrand" as const;
+const SQLITE_DEFAULT_DB = "configurate.db" as const;
+const SQLITE_DEFAULT_TABLE = "configurate_configs" as const;
+
+function createProvider(payload: ProviderPayload): ConfigurateProvider {
+  const provider = {
+    ...payload,
+    [PROVIDER_BRAND_KEY]: true,
+  } as const;
+  return Object.freeze(provider) as ConfigurateProvider;
+}
+
+function isProvider(input: unknown): input is ConfigurateProvider {
+  if (typeof input !== "object" || input === null) {
+    return false;
+  }
+  const value = input as Record<string, unknown>;
+  if (value[PROVIDER_BRAND_KEY] !== true) {
+    return false;
+  }
+  const kind = value.kind;
+  return kind === "json" || kind === "yml" || kind === "binary" || kind === "sqlite";
+}
+
+export function JsonProvider(): ConfigurateProvider {
+  return createProvider({ kind: "json" });
+}
+
+export function YmlProvider(): ConfigurateProvider {
+  return createProvider({ kind: "yml" });
+}
+
+export function BinaryProvider(opts?: {
+  encryptionKey?: string;
+}): ConfigurateProvider {
+  return createProvider({ kind: "binary", encryptionKey: opts?.encryptionKey });
+}
+
+export function SqliteProvider(opts?: {
+  dbName?: string;
+  tableName?: string;
+}): ConfigurateProvider {
+  return createProvider({
+    kind: "sqlite",
+    dbName: opts?.dbName ?? SQLITE_DEFAULT_DB,
+    tableName: opts?.tableName ?? SQLITE_DEFAULT_TABLE,
+  });
+}
+
+/** @deprecated Use `YmlProvider()` instead. */
+export function YamlProvider(): ConfigurateProvider {
+  warnDeprecatedOnce(
+    "provider-yaml-name",
+    "YamlProvider() is deprecated. Use YmlProvider() instead.",
+  );
+  return YmlProvider();
+}
+
+// ---------------------------------------------------------------------------
 // Keyring options
 // ---------------------------------------------------------------------------
 
-/**
- * Options required to access the OS keyring.
- * Stored with OS keyring fields:
- * - service = `{service}`
- * - user    = `{account}/{id}`
- */
 export interface KeyringOptions {
-  /** The keyring service name (e.g. your application name). */
   service: string;
-  /** The keyring account name (e.g. `"default"`). */
   account: string;
 }
 
@@ -191,7 +201,6 @@ export interface KeyringOptions {
 // Internal runtime helpers
 // ---------------------------------------------------------------------------
 
-/** Runtime check: is this value a KeyringField marker? */
 function isKeyringField(
   val: SchemaValue,
 ): val is KeyringField<unknown, string> {
@@ -202,15 +211,10 @@ function isKeyringField(
   );
 }
 
-/** Runtime check: is this value a nested SchemaObject? */
 function isSchemaObject(val: SchemaValue): val is SchemaObject {
   return typeof val === "object" && val !== null && !isKeyringField(val);
 }
 
-/**
- * Recursively collects all keyring ids from a schema as a flat string array.
- * Used for runtime duplicate validation.
- */
 function collectKeyringIds(schema: SchemaObject): string[] {
   const ids: string[] = [];
   for (const val of Object.values(schema)) {
@@ -223,10 +227,6 @@ function collectKeyringIds(schema: SchemaObject): string[] {
   return ids;
 }
 
-/**
- * Recursively collects all keyring entries as `{ id, dotpath }` pairs.
- * `dotpath` is the dot-separated path to the field inside the config object.
- */
 function collectKeyringPaths(
   schema: SchemaObject,
   prefix = "",
@@ -243,13 +243,6 @@ function collectKeyringPaths(
   return result;
 }
 
-/**
- * Separates a data object into non-secret plain fields and keyring entries.
- * Secret values are extracted from their dotpath locations and serialized to
- * strings so the Rust side can store them in the OS keyring.
- * The corresponding dotpath in `plain` is set to `null` so secrets are never
- * persisted to disk.
- */
 function separateSecrets(
   data: Record<string, unknown>,
   keyringPaths: { id: string; dotpath: string }[],
@@ -258,26 +251,29 @@ function separateSecrets(
   keyringEntries: Array<{ id: string; dotpath: string; value: string }>;
 } {
   const plain = structuredClone(data) as Record<string, unknown>;
-  const keyringEntries: Array<{ id: string; dotpath: string; value: string }> =
-    [];
+  const keyringEntries: Array<{ id: string; dotpath: string; value: string }> = [];
 
   for (const { id, dotpath } of keyringPaths) {
     const parts = dotpath.split(".");
     let node: unknown = plain;
     for (let i = 0; i < parts.length - 1; i++) {
-      if (node === null || typeof node !== "object") break;
+      if (node === null || typeof node !== "object") {
+        break;
+      }
       node = (node as Record<string, unknown>)[parts[i] ?? ""];
     }
+
+    if (node === null || typeof node !== "object") {
+      continue;
+    }
+
     const last = parts.at(-1) ?? "";
-    // Guard: after traversal node must still be a plain object.
-    if (node === null || typeof node !== "object") continue;
     const parent = node as Record<string, unknown>;
     if (last in parent) {
       const secret = parent[last];
       const serialized =
         typeof secret === "string" ? secret : JSON.stringify(secret);
       keyringEntries.push({ id, dotpath, value: serialized });
-      // Nullify the secret in the plain data so it is never written to disk.
       parent[last] = null;
     }
   }
@@ -285,17 +281,308 @@ function separateSecrets(
   return { plain, keyringEntries };
 }
 
+type SqliteValueType = "string" | "number" | "boolean";
+
+interface SqliteColumn {
+  columnName: string;
+  dotpath: string;
+  valueType: SqliteValueType;
+  isKeyring: boolean;
+}
+
+function dotpathToColumnName(dotpath: string): string {
+  const normalized = dotpath.replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_");
+  return normalized.toLowerCase();
+}
+
+function collectSqliteColumns(
+  schema: SchemaObject,
+  prefix = "",
+  out: SqliteColumn[] = [],
+): SqliteColumn[] {
+  for (const [key, val] of Object.entries(schema)) {
+    const dotpath = prefix ? `${prefix}.${key}` : key;
+
+    if (isKeyringField(val)) {
+      out.push({
+        columnName: dotpathToColumnName(dotpath),
+        dotpath,
+        valueType: "string",
+        isKeyring: true,
+      });
+      continue;
+    }
+
+    if (isSchemaObject(val)) {
+      collectSqliteColumns(val, dotpath, out);
+      continue;
+    }
+
+    if (val === String) {
+      out.push({
+        columnName: dotpathToColumnName(dotpath),
+        dotpath,
+        valueType: "string",
+        isKeyring: false,
+      });
+      continue;
+    }
+
+    if (val === Number) {
+      out.push({
+        columnName: dotpathToColumnName(dotpath),
+        dotpath,
+        valueType: "number",
+        isKeyring: false,
+      });
+      continue;
+    }
+
+    if (val === Boolean) {
+      out.push({
+        columnName: dotpathToColumnName(dotpath),
+        dotpath,
+        valueType: "boolean",
+        isKeyring: false,
+      });
+      continue;
+    }
+  }
+
+  const seen = new Set<string>();
+  for (const col of out) {
+    if (seen.has(col.columnName)) {
+      throw new Error(
+        `SQLite schema column collision: '${col.columnName}'. Adjust schema field names to avoid collisions.`,
+      );
+    }
+    seen.add(col.columnName);
+  }
+
+  return out;
+}
+
+const deprecationWarnings = new Set<string>();
+
+function warnDeprecatedOnce(key: string, message: string): void {
+  if (deprecationWarnings.has(key)) {
+    return;
+  }
+  deprecationWarnings.add(key);
+  console.warn(`[tauri-plugin-configurate] ${message}`);
+}
+
+function normalizeLegacyFormatToProvider(
+  format: StorageFormat,
+  encryptionKey: string | undefined,
+): ConfigurateProvider {
+  if (format === "json") {
+    return JsonProvider();
+  }
+  if (format === "yaml" || format === "yml") {
+    return YmlProvider();
+  }
+  return BinaryProvider({ encryptionKey });
+}
+
+function assertNonEmptyId(ids: Set<string>, id: string): void {
+  if (!id) {
+    throw new Error("Batch entry id must not be empty.");
+  }
+  if (ids.has(id)) {
+    throw new Error(`Batch entry id '${id}' is duplicated.`);
+  }
+  ids.add(id);
+}
+
 // ---------------------------------------------------------------------------
-// LockedConfig
+// Config objects
 // ---------------------------------------------------------------------------
 
-/**
- * A loaded configuration where keyring-protected fields are `null`.
- * Call `.unlock(opts)` to fetch secrets and obtain an `UnlockedConfig<S>`.
- *
- * `unlock()` issues a single IPC call that only reads from the OS keyring —
- * it does **not** re-read the file from disk.
- */
+export interface ConfiguratePathOptions {
+  dirName?: string;
+  currentPath?: string;
+}
+
+export interface ConfigurateInit<S extends SchemaObject> {
+  schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown);
+  fileName: string;
+  baseDir: BaseDirectory;
+  provider: ConfigurateProvider;
+  options?: ConfiguratePathOptions;
+}
+
+export interface LegacyConfigurateOptions {
+  name: string;
+  dir: BaseDirectory;
+  format: StorageFormat;
+  dirName?: string;
+  path?: string;
+  encryptionKey?: string;
+}
+
+interface ConfigurateCompatInit<S extends SchemaObject> {
+  schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown);
+  fileName?: string;
+  name?: string;
+  baseDir?: BaseDirectory;
+  dir?: BaseDirectory;
+  provider?: ConfigurateProvider;
+  format?: StorageFormat;
+  encryptionKey?: string;
+  options?: ConfiguratePathOptions;
+  dirName?: string;
+  path?: string;
+}
+
+interface NormalizedConfigurateInit<S extends SchemaObject> {
+  schema: S;
+  fileName: string;
+  baseDir: BaseDirectory;
+  provider: ConfigurateProvider;
+  options?: ConfiguratePathOptions;
+}
+
+function normalizeConfigurateInit<S extends SchemaObject>(
+  input: ConfigurateCompatInit<S>,
+): NormalizedConfigurateInit<S> {
+  const schema = input.schema;
+
+  const fileName = input.fileName ?? input.name;
+  if (!fileName) {
+    throw new Error('Configurate: "fileName" (or legacy "name") must be provided.');
+  }
+  if (input.fileName === undefined && input.name !== undefined) {
+    warnDeprecatedOnce(
+      "legacy-name",
+      '"name" is deprecated. Use "fileName" instead.',
+    );
+  }
+
+  const baseDir = input.baseDir ?? input.dir;
+  if (baseDir === undefined) {
+    throw new Error('Configurate: "baseDir" (or legacy "dir") must be provided.');
+  }
+  if (input.baseDir === undefined && input.dir !== undefined) {
+    warnDeprecatedOnce(
+      "legacy-dir",
+      '"dir" is deprecated. Use "baseDir" instead.',
+    );
+  }
+
+  let provider = input.provider;
+  if (!provider) {
+    if (!input.format) {
+      throw new Error(
+        'Configurate: "provider" is required (or legacy "format" for compatibility).',
+      );
+    }
+    warnDeprecatedOnce(
+      "legacy-format",
+      '"format"/"encryptionKey" is deprecated. Use provider functions instead.',
+    );
+    provider = normalizeLegacyFormatToProvider(input.format, input.encryptionKey);
+  } else if (!isProvider(provider)) {
+    throw new Error(
+      "Configurate: provider must be created by JsonProvider/YmlProvider/BinaryProvider/SqliteProvider.",
+    );
+  }
+
+  const options = input.options
+    ? {
+        dirName: input.options.dirName,
+        currentPath: input.options.currentPath,
+      }
+    : {
+        dirName: input.dirName,
+        currentPath: input.path,
+      };
+
+  if (!input.options && (input.dirName !== undefined || input.path !== undefined)) {
+    warnDeprecatedOnce(
+      "legacy-path-fields",
+      '"dirName"/"path" at top-level is deprecated. Use options.{dirName,currentPath}.',
+    );
+  }
+
+  if (
+    provider.kind === "binary" &&
+    provider.encryptionKey === undefined &&
+    input.encryptionKey !== undefined
+  ) {
+    provider = BinaryProvider({ encryptionKey: input.encryptionKey });
+  }
+
+  if (
+    provider.kind !== "binary" &&
+    "encryptionKey" in provider &&
+    provider.encryptionKey !== undefined
+  ) {
+    throw new Error(
+      `encryptionKey is only supported with provider.kind="binary", got "${provider.kind}".`,
+    );
+  }
+
+  if (fileName.includes("/") || fileName.includes("\\")) {
+    throw new Error(
+      'Configurate: "fileName" must be a single filename and cannot contain path separators.',
+    );
+  }
+  if (fileName === "." || fileName === "..") {
+    throw new Error('Configurate: "fileName" must not be "." or "..".');
+  }
+
+  if (options.dirName !== undefined) {
+    const segments = options.dirName.split(/[\\/]/);
+    if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) {
+      throw new Error(
+        'Configurate: "options.dirName" must not contain empty or special segments.',
+      );
+    }
+  }
+  if (options.currentPath !== undefined) {
+    const segments = options.currentPath.split(/[\\/]/);
+    if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) {
+      throw new Error(
+        'Configurate: "options.currentPath" must not contain empty or special segments.',
+      );
+    }
+  }
+
+  return {
+    schema,
+    fileName,
+    baseDir,
+    provider,
+    options: options.dirName || options.currentPath ? options : undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Result types
+// ---------------------------------------------------------------------------
+
+export type BatchRunEntryResult =
+  | { ok: true; data: unknown }
+  | { ok: false; error: { kind: string; message: string } };
+
+export interface BatchRunResult {
+  results: Record<string, BatchRunEntryResult>;
+}
+
+interface BatchConfigLike {
+  _buildPayload(
+    op: "create" | "load" | "save" | "delete",
+    data: unknown,
+    keyringOpts: KeyringOptions | null,
+    withUnlock: boolean,
+  ): Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Locked/Unlocked entries
+// ---------------------------------------------------------------------------
+
 export class LockedConfig<S extends SchemaObject> {
   readonly data: InferLocked<S>;
 
@@ -307,10 +594,6 @@ export class LockedConfig<S extends SchemaObject> {
     this.data = data;
   }
 
-  /**
-   * Fetches all keyring secrets and returns an `UnlockedConfig`.
-   * Issues a single IPC call (keyring read only – file is not re-read).
-   */
   async unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
     return this._configurate._unlockFromData(
       this.data as Record<string, unknown>,
@@ -319,14 +602,6 @@ export class LockedConfig<S extends SchemaObject> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// UnlockedConfig
-// ---------------------------------------------------------------------------
-
-/**
- * A configuration where all keyring-protected fields contain their real values.
- * Call `.lock()` to discard in-memory secrets (no IPC required).
- */
 export class UnlockedConfig<S extends SchemaObject> {
   private _data: InferUnlocked<S> | null;
 
@@ -335,48 +610,20 @@ export class UnlockedConfig<S extends SchemaObject> {
     this._data = data;
   }
 
-  /**
-   * Returns the unlocked configuration data.
-   * Throws if `lock()` has already been called.
-   */
   get data(): InferUnlocked<S> {
     if (this._data === null) {
       throw new Error(
-        "Cannot access data after lock() has been called. " +
-          "Load or unlock the config again to get a fresh instance.",
+        "Cannot access data after lock() has been called. Load or unlock again.",
       );
     }
     return this._data;
   }
 
-  /**
-   * Discards in-memory secrets. Callers should drop all references to this
-   * object after calling `lock()`.
-   *
-   * > **Security note** — JavaScript does not provide a guaranteed way to
-   * > zero-out memory. Calling `lock()` nullifies the top-level reference
-   * > but the secret values remain in the JS heap until the GC collects them.
-   * > Avoid long-lived `UnlockedConfig` objects when handling sensitive data.
-   */
   lock(): void {
     this._data = null;
   }
 }
 
-// ---------------------------------------------------------------------------
-// LazyConfigEntry
-// ---------------------------------------------------------------------------
-
-/**
- * A lazy handle returned by `Configurate.load()`, `.create()` and `.save()`.
- *
- * - `await entry.run()` → `LockedConfig<S>` (one IPC, secrets are null)
- * - `await entry.unlock(opts)` → `UnlockedConfig<S>` (one IPC, secrets inlined)
- * - `.lock(opts)` (before awaiting) → write secrets to keyring in the same IPC
- *
- * Use `await entry.run()` instead of `await entry` directly to avoid the
- * `no-thenable` lint rule and unintended Promise behaviour.
- */
 export class LazyConfigEntry<S extends SchemaObject> {
   private _keyringOpts: KeyringOptions | null = null;
 
@@ -387,21 +634,11 @@ export class LazyConfigEntry<S extends SchemaObject> {
     private readonly _data?: InferUnlocked<S>,
   ) {}
 
-  /**
-   * Attaches keyring options so secrets are written to / read from the OS
-   * keyring in the same IPC call as the main operation.
-   *
-   * Returns `this` to allow chaining: `entry.lock(opts).run()`.
-   */
   lock(opts: KeyringOptions): this {
     this._keyringOpts = opts;
     return this;
   }
 
-  /**
-   * Executes the operation and returns a `LockedConfig` (secrets are null).
-   * Issues a single IPC call.
-   */
   run(): Promise<LockedConfig<S>> {
     return this._configurate._executeLocked(
       this._op,
@@ -410,12 +647,130 @@ export class LazyConfigEntry<S extends SchemaObject> {
     );
   }
 
-  /**
-   * Executes the operation and returns an `UnlockedConfig` (secrets inlined).
-   * Issues a single IPC call – no extra round-trip compared to `run()`.
-   */
   unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
     return this._configurate._executeUnlock(this._op, this._data, opts);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Batch builders
+// ---------------------------------------------------------------------------
+
+export interface LoadAllEntry {
+  id: string;
+  config: BatchConfigLike;
+}
+
+export interface SaveAllEntry {
+  id: string;
+  config: BatchConfigLike;
+  data: unknown;
+}
+
+export interface LoadAllRunner {
+  unlock(id: string, opts: KeyringOptions): LoadAllRunner;
+  unlockAll(opts: KeyringOptions): LoadAllRunner;
+  run(): Promise<BatchRunResult>;
+}
+
+export interface SaveAllRunner {
+  lock(id: string, opts: KeyringOptions): SaveAllRunner;
+  lockAll(opts: KeyringOptions): SaveAllRunner;
+  run(): Promise<BatchRunResult>;
+}
+
+class LoadAllBuilder {
+  private readonly _entries: LoadAllEntry[];
+  private _unlockAll: KeyringOptions | null = null;
+  private readonly _unlockById = new Map<string, KeyringOptions>();
+  private readonly _idSet = new Set<string>();
+
+  constructor(entries: LoadAllEntry[]) {
+    if (entries.length === 0) {
+      throw new Error("Configurate.loadAll requires at least one entry.");
+    }
+
+    for (const entry of entries) {
+      assertNonEmptyId(this._idSet, entry.id);
+    }
+    this._entries = entries;
+  }
+
+  unlock(id: string, opts: KeyringOptions): this {
+    if (!this._idSet.has(id)) {
+      throw new Error(`Unknown id '${id}' passed to loadAll().unlock().`);
+    }
+    this._unlockById.set(id, opts);
+    return this;
+  }
+
+  unlockAll(opts: KeyringOptions): this {
+    this._unlockAll = opts;
+    return this;
+  }
+
+  async run(): Promise<BatchRunResult> {
+    const payload = {
+      entries: this._entries.map((entry) => {
+        const unlockOpts = this._unlockById.get(entry.id) ?? this._unlockAll;
+        return {
+          id: entry.id,
+          payload: entry.config._buildPayload("load", undefined, unlockOpts, unlockOpts !== null),
+        };
+      }),
+    };
+
+    return invoke<BatchRunResult>("plugin:configurate|load_all", { payload });
+  }
+}
+
+class SaveAllBuilder {
+  private readonly _entries: SaveAllEntry[];
+  private _lockAll: KeyringOptions | null = null;
+  private readonly _lockById = new Map<string, KeyringOptions>();
+  private readonly _idSet = new Set<string>();
+
+  constructor(entries: SaveAllEntry[]) {
+    if (entries.length === 0) {
+      throw new Error("Configurate.saveAll requires at least one entry.");
+    }
+
+    for (const entry of entries) {
+      assertNonEmptyId(this._idSet, entry.id);
+    }
+    this._entries = entries;
+  }
+
+  lock(id: string, opts: KeyringOptions): this {
+    if (!this._idSet.has(id)) {
+      throw new Error(`Unknown id '${id}' passed to saveAll().lock().`);
+    }
+    this._lockById.set(id, opts);
+    return this;
+  }
+
+  lockAll(opts: KeyringOptions): this {
+    this._lockAll = opts;
+    return this;
+  }
+
+  async run(): Promise<BatchRunResult> {
+    const payload = {
+      entries: this._entries.map((entry) => {
+        const lockOpts = this._lockById.get(entry.id) ?? this._lockAll;
+        return {
+          id: entry.id,
+          payload: entry.config._buildPayload(
+            "save",
+            entry.data as InferUnlocked<SchemaObject>,
+            lockOpts,
+            false,
+          ),
+        };
+      }),
+    };
+
+    return invoke<BatchRunResult>("plugin:configurate|save_all", { payload });
   }
 }
 
@@ -423,212 +778,73 @@ export class LazyConfigEntry<S extends SchemaObject> {
 // Configurate class
 // ---------------------------------------------------------------------------
 
-/**
- * Base options shared across all configs created by a `ConfigurateFactory`.
- * `name` is omitted because each config provides its own filename.
- *
- * `dirName` replaces the app identifier component of the base path.
- * `path` adds a sub-directory within the root (after `dirName` / identifier).
- */
-export interface ConfigurateBaseOptions {
-  /** Base directory in which the configuration file will be stored. */
-  dir: BaseDirectory;
-  /**
-   * Optional replacement for the app identifier directory.
-   *
-   * When provided, **replaces** the identifier component of the resolved base path.
-   * For example, with `BaseDirectory.AppConfig` on Windows:
-   *
-   * | `dirName`    | Resolved root                        |
-   * | ------------ | ------------------------------------ |
-   * | _(omitted)_  | `%APPDATA%/com.example.app/`         |
-   * | `"my-app"`   | `%APPDATA%/my-app/`                  |
-   * | `"org/app"`  | `%APPDATA%/org/app/`                 |
-   *
-   * Each segment is validated on the Rust side; `..` and Windows-forbidden
-   * characters are rejected.
-   */
-  dirName?: string;
-  /**
-   * Optional sub-directory within the root (after `dirName` / identifier is applied).
-   *
-   * Use forward slashes to create nested directories (e.g. `"config/v2"`).
-   * Each segment is validated on the Rust side; `..` and Windows-forbidden
-   * characters are rejected.
-   *
-   * ### Path layout
-   *
-   * | `dirName`   | `path`      | Resolved path (AppConfig, identifier `com.example.app`)  |
-   * | ----------- | ----------- | --------------------------------------------------------- |
-   * | _(omitted)_ | _(omitted)_ | `%APPDATA%/com.example.app/<name>`                        |
-   * | `"my-app"`  | _(omitted)_ | `%APPDATA%/my-app/<name>`                                 |
-   * | _(omitted)_ | `"cfg/v2"`  | `%APPDATA%/com.example.app/cfg/v2/<name>`                 |
-   * | `"my-app"`  | `"cfg/v2"`  | `%APPDATA%/my-app/cfg/v2/<name>`                          |
-   */
-  path?: string;
-  /** On-disk storage format. */
-  format: StorageFormat;
-  /**
-   * Encryption key for the `"binary"` format.
-   *
-   * When provided, the file is encrypted with **XChaCha20-Poly1305**. The
-   * 32-byte cipher key is derived internally via `SHA-256(encryptionKey)`, so
-   * the value should be high-entropy — for example a random key stored in the
-   * OS keyring. Omit this field when using `"json"` or `"yaml"` formats, or
-   * when backward-compatible unencrypted binary files are required.
-   *
-   * Encrypted binary files use the `.binc` extension instead of `.bin`.
-   */
-  encryptionKey?: string;
-}
-
-/** Options passed to the `Configurate` constructor. */
-export interface ConfigurateOptions extends ConfigurateBaseOptions {
-  /**
-   * Full filename for the configuration file, including extension.
-   *
-   * Examples: `"app.json"`, `"data.yaml"`, `"settings.binc"`, `".env"`.
-   *
-   * Must be a single path component — path separators (`/`, `\`) are rejected
-   * by the Rust side. Use the `path` option to store files in a sub-directory.
-   */
-  name: string;
-}
-
-/**
- * Main entry point for managing application configuration.
- *
- * @example
- * ```ts
- * import { Configurate, defineConfig, keyring, BaseDirectory } from "tauri-plugin-configurate-api";
- *
- * const schema = defineConfig({
- *   appName: String,
- *   port: Number,
- *   apiKey: keyring(String, { id: "api-key" }),
- * });
- *
- * const config = new Configurate(schema, {
- *   name: "app-config.json",
- *   dir: BaseDirectory.AppConfig,
- *   format: "json",
- * });
- *
- * // Create – IPC ×1
- * await config
- *   .create({ appName: "MyApp", port: 3000, apiKey: "secret" })
- *   .lock({ service: "my-app", account: "default" })
- *   .run();
- *
- * // Load locked – IPC ×1
- * const locked = await config.load().run();
- * locked.data.apiKey; // null
- *
- * // Unlock from locked – IPC ×1 (keyring only, file is not re-read)
- * const unlocked = await locked.unlock({ service: "my-app", account: "default" });
- * unlocked.data.apiKey; // "secret"
- *
- * // Load and unlock in one shot – IPC ×1
- * const unlocked2 = await config.load().unlock({ service: "my-app", account: "default" });
- * ```
- */
 export class Configurate<S extends SchemaObject> {
   private readonly _schema: S;
-  private readonly _opts: ConfigurateOptions;
+  private readonly _opts: NormalizedConfigurateInit<S>;
   private readonly _keyringPaths: { id: string; dotpath: string }[];
+  private readonly _sqliteColumns: SqliteColumn[];
 
   constructor(
+    opts: ConfigurateInit<S>,
+  );
+  constructor(
     schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-    opts: ConfigurateOptions,
+    opts: LegacyConfigurateOptions,
+  );
+  constructor(
+    schemaOrOpts:
+      | ConfigurateInit<S>
+      | (S & (true extends HasDuplicateKeyringIds<S> ? never : unknown)),
+    legacyOpts?: LegacyConfigurateOptions,
   ) {
-    if (opts.encryptionKey !== undefined && opts.format !== "binary") {
-      throw new Error(
-        `encryptionKey is only supported with format "binary", got "${opts.format}". ` +
-          `Remove encryptionKey or change format to "binary".`,
+    const normalized =
+      legacyOpts === undefined
+        ? normalizeConfigurateInit(schemaOrOpts as ConfigurateCompatInit<S>)
+        : normalizeConfigurateInit(
+            {
+              schema: schemaOrOpts as S &
+                (true extends HasDuplicateKeyringIds<S> ? never : unknown),
+              ...legacyOpts,
+            } as ConfigurateCompatInit<S>,
+          );
+
+    if (legacyOpts !== undefined) {
+      warnDeprecatedOnce(
+        "legacy-constructor-signature",
+        "Configurate(schema, opts) is deprecated. Use new Configurate({ schema, ... }) instead.",
       );
     }
-    if (!opts.name) {
-      throw new Error('Configurate: "name" must not be empty.');
-    }
-    if (opts.name.includes("/") || opts.name.includes("\\")) {
-      throw new Error(
-        'Configurate: "name" must be a single filename and cannot contain path separators.',
-      );
-    }
-    if (opts.name === "." || opts.name === "..") {
-      throw new Error('Configurate: "name" must not be "." or "..".');
-    }
-    if (opts.dirName !== undefined) {
-      const dirNameSegments = opts.dirName.split(/[/\\]/);
-      if (
-        dirNameSegments.some((seg) => seg === "" || seg === "." || seg === "..")
-      ) {
-        throw new Error(
-          'Configurate: "dirName" must not contain empty or special segments.',
-        );
-      }
-    }
-    if (opts.path !== undefined) {
-      const pathSegments = opts.path.split(/[/\\]/);
-      if (
-        pathSegments.some((seg) => seg === "" || seg === "." || seg === "..")
-      ) {
-        throw new Error(
-          'Configurate: "path" must not contain empty or special segments.',
-        );
-      }
-    }
-    this._schema = schema as unknown as S;
-    this._opts = opts;
+
+    this._schema = normalized.schema;
+    this._opts = normalized;
     this._keyringPaths = collectKeyringPaths(this._schema);
+    this._sqliteColumns = collectSqliteColumns(this._schema);
   }
 
-  // -------------------------------------------------------------------------
-  // Public API
-  // -------------------------------------------------------------------------
+  static loadAll(entries: LoadAllEntry[]): LoadAllRunner {
+    return new LoadAllBuilder(entries);
+  }
 
-  /** Returns a lazy entry that creates the config file on the Rust side. */
+  static saveAll(entries: SaveAllEntry[]): SaveAllRunner {
+    return new SaveAllBuilder(entries);
+  }
+
   create(data: InferUnlocked<S>): LazyConfigEntry<S> {
     return new LazyConfigEntry(this, "create", data);
   }
 
-  /** Returns a lazy entry that loads the config file from the Rust side. */
   load(): LazyConfigEntry<S> {
     return new LazyConfigEntry(this, "load");
   }
 
-  /** Returns a lazy entry that overwrites the config file on the Rust side. */
   save(data: InferUnlocked<S>): LazyConfigEntry<S> {
     return new LazyConfigEntry(this, "save", data);
   }
 
-  /**
-   * Deletes the configuration file from disk **and** removes all associated
-   * keyring entries from the OS keyring in a single IPC call.
-   *
-   * Pass `opts` when the schema contains `keyring()` fields so the plugin
-   * knows which keyring entries to wipe. Omit `opts` (or pass `null`) when
-   * the schema has no keyring fields.
-   *
-   * Returns `Promise<void>`. Resolves even if the file did not exist.
-   *
-   * @example
-   * ```ts
-   * // Schema with keyring fields – pass keyring opts to wipe secrets too.
-   * await config.delete({ service: "my-app", account: "default" });
-   *
-   * // Schema with no keyring fields – opts may be omitted.
-   * await config.delete();
-   * ```
-   */
   async delete(opts?: KeyringOptions | null): Promise<void> {
-    const payload = this._buildPayload("load", undefined, opts ?? null, false);
+    const payload = this._buildPayload("delete", undefined, opts ?? null, false);
     await invoke("plugin:configurate|delete", { payload });
   }
-
-  // -------------------------------------------------------------------------
-  // Internal helpers (called by LazyConfigEntry / LockedConfig)
-  // -------------------------------------------------------------------------
 
   /** @internal */
   async _executeLocked(
@@ -637,7 +853,7 @@ export class Configurate<S extends SchemaObject> {
     keyringOpts: KeyringOptions | null,
   ): Promise<LockedConfig<S>> {
     const payload = this._buildPayload(op, data, keyringOpts, false);
-    const result = await invoke<InferLocked<S>>("plugin:configurate|" + op, {
+    const result = await invoke<InferLocked<S>>(`plugin:configurate|${op}`, {
       payload,
     });
     return new LockedConfig(result, this);
@@ -650,19 +866,13 @@ export class Configurate<S extends SchemaObject> {
     keyringOpts: KeyringOptions,
   ): Promise<UnlockedConfig<S>> {
     const payload = this._buildPayload(op, data, keyringOpts, true);
-    const result = await invoke<InferUnlocked<S>>("plugin:configurate|" + op, {
+    const result = await invoke<InferUnlocked<S>>(`plugin:configurate|${op}`, {
       payload,
     });
     return new UnlockedConfig(result);
   }
 
-  /**
-   * Fetches keyring secrets and merges them into already-loaded plain data
-   * without re-reading the file from disk.
-   * Issues a single IPC call to `plugin:configurate|unlock`.
-   *
-   * @internal
-   */
+  /** @internal */
   async _unlockFromData(
     plainData: Record<string, unknown>,
     opts: KeyringOptions,
@@ -670,6 +880,7 @@ export class Configurate<S extends SchemaObject> {
     if (this._keyringPaths.length === 0) {
       return new UnlockedConfig(plainData as InferUnlocked<S>);
     }
+
     const payload = {
       data: plainData,
       keyringEntries: this._keyringPaths.map(({ id, dotpath }) => ({
@@ -679,45 +890,50 @@ export class Configurate<S extends SchemaObject> {
       })),
       keyringOptions: opts,
     };
+
     const result = await invoke<InferUnlocked<S>>("plugin:configurate|unlock", {
       payload,
     });
     return new UnlockedConfig(result);
   }
 
-  // -------------------------------------------------------------------------
-  // Payload builder
-  // -------------------------------------------------------------------------
-
   /** @internal */
   _buildPayload(
-    op: "create" | "load" | "save",
-    data: InferUnlocked<S> | undefined,
+    op: "create" | "load" | "save" | "delete",
+    data: unknown,
     keyringOpts: KeyringOptions | null,
     withUnlock: boolean,
   ): Record<string, unknown> {
+    const provider: ProviderPayload =
+      this._opts.provider.kind === "binary"
+        ? {
+            kind: "binary",
+            encryptionKey: this._opts.provider.encryptionKey,
+          }
+        : this._opts.provider.kind === "sqlite"
+          ? {
+              kind: "sqlite",
+              dbName: this._opts.provider.dbName,
+              tableName: this._opts.provider.tableName,
+            }
+          : { kind: this._opts.provider.kind };
+
     const base: Record<string, unknown> = {
-      name: this._opts.name,
-      dir: this._opts.dir as number,
-      format: this._opts.format,
+      fileName: this._opts.fileName,
+      baseDir: this._opts.baseDir as number,
+      provider,
       withUnlock,
+      schemaColumns: this._sqliteColumns,
     };
 
-    if (this._opts.dirName !== undefined) {
-      base.dirName = this._opts.dirName;
+    if (this._opts.options !== undefined) {
+      base.options = {
+        dirName: this._opts.options.dirName,
+        currentPath: this._opts.options.currentPath,
+      };
     }
 
-    if (this._opts.path !== undefined) {
-      base.path = this._opts.path;
-    }
-
-    if (this._opts.encryptionKey) {
-      base.encryptionKey = this._opts.encryptionKey;
-    }
-
-    if (op === "load") {
-      // For load we only need the keyring ids and dotpaths so the Rust side
-      // knows which dotpaths to populate when with_unlock is true.
+    if (op === "load" || op === "delete") {
       if (keyringOpts && this._keyringPaths.length > 0) {
         base.keyringEntries = this._keyringPaths.map(({ id, dotpath }) => ({
           id,
@@ -726,7 +942,10 @@ export class Configurate<S extends SchemaObject> {
         }));
         base.keyringOptions = keyringOpts;
       }
-    } else if (data !== undefined) {
+      return base;
+    }
+
+    if (data !== undefined) {
       const { plain, keyringEntries } = separateSecrets(
         data as Record<string, unknown>,
         this._keyringPaths,
@@ -743,153 +962,141 @@ export class Configurate<S extends SchemaObject> {
 }
 
 // ---------------------------------------------------------------------------
-// ConfigurateFactory
+// ConfigurateFactory (compatibility wrapper)
 // ---------------------------------------------------------------------------
 
-/**
- * Object form accepted by `ConfigurateFactory.build()` as the second argument.
- *
- * - `name` — filename (may include a relative path, e.g. `"config/state.bin"`)
- * - `path` — sub-directory appended after the root / `dirName`; `null` disables the factory-level value
- * - `dirName` — replaces the app identifier segment; `null` disables the factory-level value
- */
 export interface BuildConfig {
-  /** Filename including extension. May contain `/`-separated path segments (e.g. `"config/state.bin"`). */
   name: string;
-  /** Optional sub-directory within the root. Pass `null` to disable the factory-level value. */
   path?: string | null;
-  /** Optional replacement for the app identifier directory. Pass `null` to disable the factory-level value. */
   dirName?: string | null;
 }
 
+export interface ConfigurateFactoryBaseOptions {
+  baseDir?: BaseDirectory;
+  dir?: BaseDirectory;
+  provider?: ConfigurateProvider;
+  format?: StorageFormat;
+  encryptionKey?: string;
+  options?: ConfiguratePathOptions;
+  dirName?: string;
+  path?: string;
+}
+
+interface NormalizedFactoryBase {
+  baseDir: BaseDirectory;
+  provider: ConfigurateProvider;
+  options?: ConfiguratePathOptions;
+}
+
+function normalizeFactoryBase(base: ConfigurateFactoryBaseOptions): NormalizedFactoryBase {
+  const baseDir = base.baseDir ?? base.dir;
+  if (baseDir === undefined) {
+    throw new Error(
+      'ConfigurateFactory: "baseDir" (or legacy "dir") must be provided.',
+    );
+  }
+
+  if (base.baseDir === undefined && base.dir !== undefined) {
+    warnDeprecatedOnce(
+      "legacy-factory-dir",
+      'ConfigurateFactory: "dir" is deprecated. Use "baseDir".',
+    );
+  }
+
+  let provider = base.provider;
+  if (provider && !isProvider(provider)) {
+    throw new Error(
+      "ConfigurateFactory: provider must be created by JsonProvider/YmlProvider/BinaryProvider/SqliteProvider.",
+    );
+  }
+  if (!provider) {
+    if (!base.format) {
+      throw new Error(
+        'ConfigurateFactory: "provider" is required (or legacy "format").',
+      );
+    }
+    warnDeprecatedOnce(
+      "legacy-factory-format",
+      'ConfigurateFactory: "format"/"encryptionKey" is deprecated. Use provider functions.',
+    );
+    provider = normalizeLegacyFormatToProvider(base.format, base.encryptionKey);
+  }
+
+  const options = base.options
+    ? {
+        dirName: base.options.dirName,
+        currentPath: base.options.currentPath,
+      }
+    : {
+        dirName: base.dirName,
+        currentPath: base.path,
+      };
+
+  if (!base.options && (base.dirName !== undefined || base.path !== undefined)) {
+    warnDeprecatedOnce(
+      "legacy-factory-options",
+      'ConfigurateFactory: top-level "dirName"/"path" is deprecated. Use options.{dirName,currentPath}.',
+    );
+  }
+
+  return {
+    baseDir,
+    provider,
+    options: options.dirName || options.currentPath ? options : undefined,
+  };
+}
+
 /**
- * A factory that creates `Configurate` instances with pre-set shared options
- * (`dir`, `format`, and optionally `dirName`, `path`, `encryptionKey`).
- *
- * Each call to `build()` creates a fresh `Configurate` instance — schema,
- * `name`, and all other options can differ freely.  This is the recommended
- * way to manage multiple config files with different schemas in a single
- * application.
- *
- * @example
- * ```ts
- * import { ConfigurateFactory, defineConfig, BaseDirectory } from "tauri-plugin-configurate-api";
- *
- * const appSchema   = defineConfig({ theme: String, language: String });
- * const cacheSchema = defineConfig({ lastSync: Number });
- * const secretSchema = defineConfig({ token: String });
- *
- * const factory = new ConfigurateFactory({
- *   dir: BaseDirectory.AppConfig,
- *   format: "json",
- * });
- *
- * const appConfig    = factory.build(appSchema,    "app.json");                                     // → app.json
- * const cacheConfig  = factory.build(cacheSchema,  "cache.json");                                   // → cache.json
- * const nestedConfig = factory.build(appSchema, { name: "app.json", path: "config" });              // → config/app.json
- * const movedConfig  = factory.build(appSchema, { name: "app.json", dirName: "my-app" });           // → %APPDATA%/my-app/app.json
- * const fullConfig   = factory.build(appSchema, { name: "app.json", dirName: "my-app", path: "cfg" }); // → %APPDATA%/my-app/cfg/app.json
- * ```
+ * @deprecated Use `new Configurate({ ... })` instead.
  */
 export class ConfigurateFactory {
-  constructor(private readonly _baseOpts: ConfigurateBaseOptions) {}
+  private readonly _base: NormalizedFactoryBase;
 
-  /**
-   * Creates a `Configurate<S>` for the given schema, applying the shared base
-   * options.
-   *
-   * `nameOrConfig` accepts either:
-   * - a plain `string` — used as the full filename (e.g. `"app.json"`, `".env"`)
-   * - `{ name: string; path?: string | null; dirName?: string | null }` — explicitly
-   *   provides the filename, optional sub-directory within the root, and optional
-   *   identifier replacement
-   *
-   * In the object form, passing `null` for `dirName` or `path` explicitly
-   * disables the factory-level value. Omitting the field (or passing
-   * `undefined`) falls back to the factory-level value.
-   *
-   * The optional third `dirName` string overrides the factory-level `dirName`
-   * for this instance (only used when `nameOrConfig` is a plain string).
-   *
-   * ### Path layout (AppConfig, identifier `com.example.app`)
-   *
-   * | `nameOrConfig`                                   | `dirName` arg | Resolved path                                  |
-   * | ------------------------------------------------ | ------------- | ---------------------------------------------- |
-   * | `"app.json"`                                     | _(omitted)_   | `%APPDATA%/com.example.app/app.json`           |
-   * | `"app.json"`                                     | `"my-app"`    | `%APPDATA%/my-app/app.json`                    |
-   * | `{ name: "app.json", path: "cfg" }`              | _(omitted)_   | `%APPDATA%/com.example.app/cfg/app.json`       |
-   * | `{ name: "app.json", dirName: "my-app" }`        | _(omitted)_   | `%APPDATA%/my-app/app.json`                    |
-   * | `{ name: "app.json", dirName: "my-app", path: "cfg" }` | _(omitted)_ | `%APPDATA%/my-app/cfg/app.json`          |
-   *
-   * @example
-   * ```ts
-   * factory.build(schema, "app.json")                                              // → <root>/app.json
-   * factory.build(schema, "app.json", "my-app")                                   // → %APPDATA%/my-app/app.json
-   * factory.build(schema, { name: "app.json", path: "config" })                   // → <root>/config/app.json
-   * factory.build(schema, { name: "app.json", dirName: "my-app" })                // → %APPDATA%/my-app/app.json
-   * factory.build(schema, { name: "cfg.json", dirName: "my-app", path: "a/b" })   // → %APPDATA%/my-app/a/b/cfg.json
-   * ```
-   */
-  build<S extends SchemaObject>(
-    schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-    nameOrConfig: string | BuildConfig,
-    dirName?: string,
-  ): Configurate<S>;
-  build<S extends SchemaObject>(
-    schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-    config: BuildConfig,
-  ): Configurate<S>;
-  build<S extends SchemaObject>(
-    schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-    name: string,
-    dirName?: string,
-  ): Configurate<S>;
+  constructor(baseOpts: ConfigurateFactoryBaseOptions) {
+    warnDeprecatedOnce(
+      "legacy-configurate-factory",
+      "ConfigurateFactory is deprecated and will be removed in the next minor version.",
+    );
+    this._base = normalizeFactoryBase(baseOpts);
+  }
+
   build<S extends SchemaObject>(
     schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
     nameOrConfig: string | BuildConfig,
     dirName?: string,
   ): Configurate<S> {
     let fileName: string;
-    let resolvedDirName: string | undefined;
-    let resolvedPath: string | undefined;
+    let resolvedDirName = this._base.options?.dirName;
+    let resolvedCurrentPath = this._base.options?.currentPath;
 
     if (typeof nameOrConfig === "string") {
       fileName = nameOrConfig;
-      // The explicit `dirName` argument overrides the factory-level dirName;
-      // fall back to the factory-level dirName when omitted.
-      resolvedDirName = dirName ?? this._baseOpts.dirName;
-      resolvedPath = this._baseOpts.path;
+      if (dirName !== undefined) {
+        resolvedDirName = dirName;
+      }
     } else {
       fileName = nameOrConfig.name;
-      // Object form: fields inside take precedence over factory-level values.
-      // Pass `null` to explicitly disable the factory-level value;
-      // `undefined` (or omitted) falls back to the factory-level value.
-      resolvedDirName =
-        nameOrConfig.dirName === null
-          ? undefined
-          : (nameOrConfig.dirName ?? this._baseOpts.dirName);
-      resolvedPath =
-        nameOrConfig.path === null
-          ? undefined
-          : (nameOrConfig.path ?? this._baseOpts.path);
+      if (nameOrConfig.dirName !== undefined) {
+        resolvedDirName = nameOrConfig.dirName ?? undefined;
+      }
+      if (nameOrConfig.path !== undefined) {
+        resolvedCurrentPath = nameOrConfig.path ?? undefined;
+      }
     }
 
-    const opts: ConfigurateOptions = {
-      ...this._baseOpts,
-      name: fileName,
-      dirName: resolvedDirName,
-      path: resolvedPath,
-    };
-
-    // Explicitly pass <S> to prevent TypeScript from re-inferring the type
-    // parameter from the argument and double-evaluating HasDuplicateKeyringIds
-    // on the already-constrained type.  The duplicate-id guarantee was already
-    // enforced at the call-site when the schema was created.
-    return new Configurate<S>(
-      schema as unknown as S &
-        (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-      opts,
-    );
+    return new Configurate<S>({
+      schema,
+      fileName,
+      baseDir: this._base.baseDir,
+      provider: this._base.provider,
+      options:
+        resolvedDirName || resolvedCurrentPath
+          ? {
+              dirName: resolvedDirName,
+              currentPath: resolvedCurrentPath,
+            }
+          : undefined,
+    });
   }
 }
 
@@ -897,26 +1104,9 @@ export class ConfigurateFactory {
 // defineConfig helper
 // ---------------------------------------------------------------------------
 
-/**
- * Defines a configuration schema. Provides a convenient declaration site and
- * compile-time duplicate keyring id checks.
- *
- * @example
- * ```ts
- * const schema = defineConfig({
- *   appName: String,
- *   port: Number,
- *   database: {
- *     host: String,
- *     password: keyring(String, { id: "db-password" }),
- *   },
- * });
- * ```
- */
 export function defineConfig<S extends SchemaObject>(
   schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
 ): S {
-  // Runtime duplicate id validation (belt-and-suspenders on top of type checks).
   const ids = collectKeyringIds(schema as SchemaObject);
   const seen = new Set<string>();
   for (const id of ids) {
