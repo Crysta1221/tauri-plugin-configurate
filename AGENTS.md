@@ -54,11 +54,11 @@ Always write a comprehensive commit message based on `git diff`.
 
 Detect the package manager from the lockfile and use it consistently:
 
-| Lockfile | Package Manager |
-|----------|----------------|
-| `bun.lock` | `bun` |
-| `pnpm-lock.yaml` | `pnpm` |
-| `yarn.lock` | `yarn` |
-| `package-lock.json` | `npm` |
+| Lockfile            | Package Manager |
+| ------------------- | --------------- |
+| `bun.lock`          | `bun`           |
+| `pnpm-lock.yaml`    | `pnpm`          |
+| `yarn.lock`         | `yarn`          |
+| `package-lock.json` | `npm`           |
 
 Never mix package managers in the same project.
