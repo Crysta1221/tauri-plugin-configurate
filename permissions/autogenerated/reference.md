@@ -8,6 +8,8 @@ Default permissions for the plugin
 - `allow-load`
 - `allow-save`
 - `allow-delete`
+- `allow-load-all`
+- `allow-save-all`
 - `allow-unlock`
 
 ## Permission Table
@@ -100,6 +102,32 @@ Denies the load command without any pre-configured scope.
 <tr>
 <td>
 
+`configurate:allow-load-all`
+
+</td>
+<td>
+
+Enables the load_all command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-load-all`
+
+</td>
+<td>
+
+Denies the load_all command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `configurate:allow-save`
 
 </td>
@@ -119,6 +147,32 @@ Enables the save command without any pre-configured scope.
 <td>
 
 Denies the save command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:allow-save-all`
+
+</td>
+<td>
+
+Enables the save_all command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-save-all`
+
+</td>
+<td>
+
+Denies the save_all command without any pre-configured scope.
 
 </td>
 </tr>

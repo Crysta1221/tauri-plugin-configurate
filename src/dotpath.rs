@@ -56,7 +56,6 @@ pub fn set(root: &mut Value, path: &str, new_val: Value) -> Result<()> {
     unreachable!("path '{}' was not resolved inside loop", path)
 }
 
-
 /// Replaces the value at the given dot-separated `path` inside `root` with `null`.
 pub fn nullify(root: &mut Value, path: &str) -> Result<()> {
     set(root, path, Value::Null)
@@ -128,4 +127,3 @@ mod tests {
         assert_eq!(root["a"]["b"]["c"]["d"], 42);
     }
 }
-

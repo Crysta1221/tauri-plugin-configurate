@@ -1,13 +1,47 @@
 use serde::{Deserialize, Serialize};
 use tauri::path::BaseDirectory;
 
-/// Supported storage file formats.
+use crate::error::{Error, Result};
+
+pub const DEFAULT_SQLITE_DB_NAME: &str = "configurate.db";
+pub const DEFAULT_SQLITE_TABLE_NAME: &str = "configurate_configs";
+
+/// Supported storage file formats (legacy input compatibility).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageFormat {
     Json,
+    #[serde(alias = "yml")]
     Yaml,
     Binary,
+}
+
+/// Supported provider kinds for the normalized runtime model.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderKind {
+    Json,
+    Yml,
+    Binary,
+    Sqlite,
+}
+
+/// Provider payload sent from the guest side.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderPayload {
+    pub kind: ProviderKind,
+    pub encryption_key: Option<String>,
+    pub db_name: Option<String>,
+    pub table_name: Option<String>,
+}
+
+/// Optional path options sent from the guest side.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathOptions {
+    pub dir_name: Option<String>,
+    pub current_path: Option<String>,
 }
 
 /// A single keyring entry containing the keyring id and its plaintext value.
@@ -33,56 +67,205 @@ pub struct KeyringOptions {
     pub account: String,
 }
 
-/// The unified payload sent from the TypeScript side for create / load / save.
+/// Value type inferred from `defineConfig` for SQLite column materialization.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SqliteValueType {
+    String,
+    Number,
+    Boolean,
+}
+
+/// Flattened column definition for SQLite persistence.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SqliteColumn {
+    pub column_name: String,
+    pub dotpath: String,
+    pub value_type: SqliteValueType,
+    #[serde(default)]
+    pub is_keyring: bool,
+}
+
+/// Unified payload sent from TypeScript side for create/load/save/delete.
+///
+/// This struct intentionally keeps both new and legacy fields so one minor
+/// version can accept old callers while normalizing into one internal model.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfiguratePayload {
-    /// Full filename for this configuration file (including extension, no path separators).
-    /// For example: `"app.json"`, `"data.yaml"`, `".env"`.
-    /// Path separators (`/`, `\`) are rejected; use `path` for subdirectories.
-    pub name: String,
-    /// Base directory (deserialized directly from Tauri's `BaseDirectory` integer enum).
-    pub dir: BaseDirectory,
-    /// Optional replacement for the app identifier directory.
-    ///
-    /// When provided, **replaces** the identifier component of the resolved base path.
-    /// For example, with `BaseDirectory::AppConfig` on Windows:
-    /// - absent     → `%APPDATA%\<identifier>\`
-    /// - `"my-app"` → `%APPDATA%\my-app\`
-    ///
-    /// Each path component is validated; `..` and Windows-forbidden characters are rejected.
+    // New API
+    pub file_name: Option<String>,
+    pub base_dir: Option<BaseDirectory>,
+    pub options: Option<PathOptions>,
+    pub provider: Option<ProviderPayload>,
+    #[serde(default)]
+    pub schema_columns: Vec<SqliteColumn>,
+
+    // Legacy API
+    pub name: Option<String>,
+    pub dir: Option<BaseDirectory>,
     pub dir_name: Option<String>,
-    /// Optional sub-directory within the root (after `dir_name` / identifier is applied).
-    ///
-    /// Use forward slashes for nested paths (e.g. `"config/v2"`).
-    /// Each component is validated; `..` and Windows-forbidden characters are rejected.
-    /// The resolved path stays within the root directory.
     pub path: Option<String>,
-    /// Storage format to use.
-    pub format: StorageFormat,
-    /// Plain (non-secret) configuration data as a JSON value.
-    pub data: Option<serde_json::Value>,
-    /// Keyring entries to write (create / save) or expected ids to read (unlock).
-    pub keyring_entries: Option<Vec<KeyringEntry>>,
-    /// Keyring options required when reading from or writing to the OS keyring.
-    pub keyring_options: Option<KeyringOptions>,
-    /// When true the command also reads secrets from the keyring and inlines them.
-    pub with_unlock: bool,
-    /// Optional encryption key for the binary format (XChaCha20-Poly1305).
-    /// The 32-byte cipher key is derived via SHA-256 of this string.
-    /// Omit for unencrypted binary (or non-binary formats).
+    pub format: Option<StorageFormat>,
     pub encryption_key: Option<String>,
+
+    // Common fields
+    pub data: Option<serde_json::Value>,
+    pub keyring_entries: Option<Vec<KeyringEntry>>,
+    pub keyring_options: Option<KeyringOptions>,
+    #[serde(default)]
+    pub with_unlock: bool,
 }
 
-/// Payload for the `unlock` command, which reads keyring secrets and inlines
-/// them into already-loaded plain data without re-reading the file from disk.
+/// Normalized provider used internally.
+#[derive(Debug, Clone)]
+pub struct NormalizedProvider {
+    pub kind: ProviderKind,
+    pub encryption_key: Option<String>,
+    pub db_name: String,
+    pub table_name: String,
+}
+
+/// Normalized payload used internally across all commands.
+#[derive(Debug, Clone)]
+pub struct NormalizedConfiguratePayload {
+    pub file_name: String,
+    pub base_dir: BaseDirectory,
+    pub dir_name: Option<String>,
+    pub current_path: Option<String>,
+    pub provider: NormalizedProvider,
+    pub schema_columns: Vec<SqliteColumn>,
+    pub data: Option<serde_json::Value>,
+    pub keyring_entries: Option<Vec<KeyringEntry>>,
+    pub keyring_options: Option<KeyringOptions>,
+    pub with_unlock: bool,
+}
+
+impl ConfiguratePayload {
+    pub fn normalize(self) -> Result<NormalizedConfiguratePayload> {
+        let file_name = self
+            .file_name
+            .or(self.name)
+            .ok_or_else(|| Error::InvalidPayload("missing fileName/name".to_string()))?;
+
+        let base_dir = self
+            .base_dir
+            .or(self.dir)
+            .ok_or_else(|| Error::InvalidPayload("missing baseDir/dir".to_string()))?;
+
+        let (dir_name, current_path) = match self.options {
+            Some(opts) => (opts.dir_name, opts.current_path),
+            None => (self.dir_name, self.path),
+        };
+
+        let provider = match self.provider {
+            Some(provider) => {
+                let encryption_key = match provider.kind {
+                    ProviderKind::Binary => provider.encryption_key.or(self.encryption_key),
+                    _ => None,
+                };
+
+                NormalizedProvider {
+                    kind: provider.kind,
+                    encryption_key,
+                    db_name: provider
+                        .db_name
+                        .unwrap_or_else(|| DEFAULT_SQLITE_DB_NAME.to_string()),
+                    table_name: provider
+                        .table_name
+                        .unwrap_or_else(|| DEFAULT_SQLITE_TABLE_NAME.to_string()),
+                }
+            }
+            None => {
+                let format = self
+                    .format
+                    .ok_or_else(|| Error::InvalidPayload("missing provider/format".to_string()))?;
+
+                let kind = match format {
+                    StorageFormat::Json => ProviderKind::Json,
+                    StorageFormat::Yaml => ProviderKind::Yml,
+                    StorageFormat::Binary => ProviderKind::Binary,
+                };
+
+                NormalizedProvider {
+                    kind,
+                    encryption_key: self.encryption_key,
+                    db_name: DEFAULT_SQLITE_DB_NAME.to_string(),
+                    table_name: DEFAULT_SQLITE_TABLE_NAME.to_string(),
+                }
+            }
+        };
+
+        if !matches!(provider.kind, ProviderKind::Binary) && provider.encryption_key.is_some() {
+            return Err(Error::InvalidPayload(
+                "encryptionKey is only supported with provider.kind='binary'".to_string(),
+            ));
+        }
+
+        Ok(NormalizedConfiguratePayload {
+            file_name,
+            base_dir,
+            dir_name,
+            current_path,
+            provider,
+            schema_columns: self.schema_columns,
+            data: self.data,
+            keyring_entries: self.keyring_entries,
+            keyring_options: self.keyring_options,
+            with_unlock: self.with_unlock,
+        })
+    }
+}
+
+/// Payload for the `unlock` command.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnlockPayload {
-    /// Plain config data (keyring fields are `null`) previously returned by load/create/save.
     pub data: serde_json::Value,
-    /// Keyring entries whose values should be fetched and inlined.
     pub keyring_entries: Option<Vec<KeyringEntry>>,
-    /// Keyring options for the OS keyring lookup.
     pub keyring_options: Option<KeyringOptions>,
+}
+
+/// Single entry used by `load_all` and `save_all`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchEntryPayload {
+    pub id: String,
+    pub payload: ConfiguratePayload,
+}
+
+/// Batch payload used by `load_all` and `save_all`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchPayload {
+    pub entries: Vec<BatchEntryPayload>,
+}
+
+/// Per-entry successful result.
+#[derive(Debug, Serialize)]
+pub struct BatchEntrySuccess {
+    pub ok: bool,
+    pub data: serde_json::Value,
+}
+
+/// Per-entry failed result.
+#[derive(Debug, Serialize)]
+pub struct BatchEntryFailure {
+    pub ok: bool,
+    pub error: serde_json::Value,
+}
+
+/// Per-entry result envelope.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum BatchEntryResult {
+    Success(BatchEntrySuccess),
+    Failure(BatchEntryFailure),
+}
+
+/// Top-level batch response.
+#[derive(Debug, Serialize)]
+pub struct BatchRunResult {
+    pub results: std::collections::BTreeMap<String, BatchEntryResult>,
 }
