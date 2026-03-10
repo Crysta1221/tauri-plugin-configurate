@@ -106,9 +106,9 @@ impl StorageBackend for YamlBackend {
     }
 
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
-        let yaml_val: serde_yml::Value =
-            serde_yml::to_value(value).map_err(|e| Error::Storage(e.to_string()))?;
-        let bytes = serde_yml::to_string(&yaml_val).map_err(|e| Error::Storage(e.to_string()))?;
+        // serde_json::Value implements Serialize, so serialize directly to YAML
+        // without an intermediate serde_yml::Value allocation.
+        let bytes = serde_yml::to_string(value).map_err(|e| Error::Storage(e.to_string()))?;
         write_file_safely(path, bytes.as_bytes())
     }
 }
@@ -258,12 +258,35 @@ fn ensure_sqlite_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// When `migrate_schema` is true, runs `PRAGMA table_info` and `ALTER TABLE ADD COLUMN`
+/// to bring the table up to date with `schema_columns`. Pass `false` for read/delete
+/// paths where DDL migration is unnecessary.
+/// Validates all SQLite identifiers (table name and column names) upfront.
+///
+/// Returns the sanitized table name. Column names are validated as a side-effect;
+/// callers can use `column.column_name` directly afterwards since `sanitize_ident`
+/// is a validation-only function (it never transforms the input).
+fn validate_sqlite_idents(table_name: &str, schema_columns: &[SqliteColumn]) -> Result<String> {
+    let table = sanitize_ident(table_name, "tableName")?;
+    for column in schema_columns {
+        sanitize_ident(&column.column_name, "schema column name")?;
+    }
+    Ok(table)
+}
+
+/// When `migrate_schema` is true, runs `PRAGMA table_info` and `ALTER TABLE ADD COLUMN`
+/// to bring the table up to date with `schema_columns`. Pass `false` for read/delete
+/// paths where DDL migration is unnecessary.
+///
+/// Callers MUST call `validate_sqlite_idents` before invoking this function;
+/// identifiers are used directly without re-validation.
 fn ensure_sqlite_table(
     conn: &Connection,
     table_name: &str,
     schema_columns: &[SqliteColumn],
+    migrate_schema: bool,
 ) -> Result<()> {
-    let table_name = sanitize_ident(table_name, "tableName")?;
+    let table_name = table_name;
 
     if schema_columns.is_empty() {
         let sql = format!(
@@ -280,8 +303,7 @@ fn ensure_sqlite_table(
 
     let mut column_defs: Vec<String> = Vec::with_capacity(schema_columns.len());
     for column in schema_columns {
-        let name = sanitize_ident(&column.column_name, "schema column name")?;
-        column_defs.push(format!("\"{}\" {}", name, sql_type_for(&column.value_type)));
+        column_defs.push(format!("\"{}\" {}", column.column_name, sql_type_for(&column.value_type)));
     }
 
     let sql = format!(
@@ -295,6 +317,10 @@ fn ensure_sqlite_table(
 
     conn.execute(&sql, [])
         .map_err(|e| Error::Storage(e.to_string()))?;
+
+    if !migrate_schema {
+        return Ok(());
+    }
 
     let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name);
     let mut stmt = conn
@@ -311,14 +337,13 @@ fn ensure_sqlite_table(
     }
 
     for column in schema_columns {
-        let name = sanitize_ident(&column.column_name, "schema column name")?;
-        if existing.contains(&name) {
+        if existing.contains(&column.column_name) {
             continue;
         }
         let alter = format!(
             "ALTER TABLE \"{}\" ADD COLUMN \"{}\" {}",
             table_name,
-            name,
+            column.column_name,
             sql_type_for(&column.value_type)
         );
         conn.execute(&alter, [])
@@ -405,12 +430,14 @@ pub fn write_sqlite(
     value: &Value,
     schema_columns: &[SqliteColumn],
 ) -> Result<()> {
+    let table_name = validate_sqlite_idents(table_name, schema_columns)?;
+
     ensure_sqlite_parent_dir(db_path)?;
     let conn = Connection::open(db_path).map_err(|e| Error::Storage(e.to_string()))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")
+        .map_err(|e| Error::Storage(e.to_string()))?;
 
-    ensure_sqlite_table(&conn, table_name, schema_columns)?;
-
-    let table_name = sanitize_ident(table_name, "tableName")?;
+    ensure_sqlite_table(&conn, &table_name, schema_columns, true)?;
 
     if schema_columns.is_empty() {
         let json_text = serde_json::to_string(value).map_err(|e| Error::Storage(e.to_string()))?;
@@ -429,8 +456,7 @@ pub fn write_sqlite(
     bind_values.push(SqlValue::Text(config_key.to_string()));
 
     for column in schema_columns {
-        let column_name = sanitize_ident(&column.column_name, "schema column name")?;
-        col_names.push(column_name);
+        col_names.push(column.column_name.clone());
         let dot_val = dotpath::get(value, &column.dotpath);
         bind_values.push(json_to_sql_value(
             dot_val,
@@ -474,10 +500,19 @@ pub fn read_sqlite(
     config_key: &str,
     schema_columns: &[SqliteColumn],
 ) -> Result<Value> {
-    let conn = Connection::open(db_path).map_err(|e| Error::Storage(e.to_string()))?;
-    ensure_sqlite_table(&conn, table_name, schema_columns)?;
+    let table_name = validate_sqlite_idents(table_name, schema_columns)?;
 
-    let table_name = sanitize_ident(table_name, "tableName")?;
+    if !db_path.exists() {
+        return Err(Error::Storage(format!(
+            "sqlite config '{}' was not found (database does not exist)",
+            config_key
+        )));
+    }
+
+    let conn = Connection::open(db_path).map_err(|e| Error::Storage(e.to_string()))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    ensure_sqlite_table(&conn, &table_name, schema_columns, false)?;
 
     if schema_columns.is_empty() {
         let sql = format!(
@@ -511,10 +546,7 @@ pub fn read_sqlite(
 
     let select_columns = schema_columns
         .iter()
-        .map(|c| sanitize_ident(&c.column_name, "schema column name"))
-        .collect::<Result<Vec<_>>>()?
-        .iter()
-        .map(|n| format!("\"{}\"", n))
+        .map(|c| format!("\"{}\"" , c.column_name))
         .collect::<Vec<_>>()
         .join(",");
 
@@ -557,11 +589,19 @@ pub fn delete_sqlite(
     config_key: &str,
     schema_columns: &[SqliteColumn],
 ) -> Result<()> {
+    let table_name = validate_sqlite_idents(table_name, schema_columns)?;
+
+    // If the database file does not exist, there is nothing to delete.
+    if !db_path.exists() {
+        return Ok(());
+    }
+
     let conn = Connection::open(db_path).map_err(|e| Error::Storage(e.to_string()))?;
-    ensure_sqlite_table(&conn, table_name, schema_columns)?;
-    let table_name = sanitize_ident(table_name, "tableName")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    ensure_sqlite_table(&conn, &table_name, schema_columns, false)?;
     let sql = format!("DELETE FROM \"{}\" WHERE \"config_key\" = ?1", table_name);
-    conn.execute(&sql, [config_key])
+    conn.execute(&sql, [config_key.to_string()])
         .map_err(|e| Error::Storage(e.to_string()))?;
     Ok(())
 }

@@ -23,18 +23,9 @@ pub fn validate_path(path: &str) -> Result<()> {
 /// Sets the value at the given dot-separated `path` inside `root` to `new_val`.
 /// Intermediate objects are created automatically if they are missing.
 pub fn set(root: &mut Value, path: &str, new_val: Value) -> Result<()> {
-    if path.is_empty() {
-        return Err(Error::Dotpath("path must not be empty".to_string()));
-    }
+    validate_path(path)?;
 
     let parts: Vec<&str> = path.split('.').collect();
-    if parts.iter().any(|segment| segment.is_empty()) {
-        return Err(Error::Dotpath(format!(
-            "invalid path '{}': empty segment is not allowed",
-            path
-        )));
-    }
-
     let mut current = root;
 
     for (i, part) in parts.iter().enumerate() {

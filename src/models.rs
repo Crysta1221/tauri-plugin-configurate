@@ -117,6 +117,9 @@ pub struct ConfiguratePayload {
     pub keyring_options: Option<KeyringOptions>,
     #[serde(default)]
     pub with_unlock: bool,
+    /// Whether create/save should return the resulting config data.
+    /// Defaults to true for backward compatibility.
+    pub return_data: Option<bool>,
 }
 
 /// Normalized provider used internally after payload normalization.
@@ -145,6 +148,7 @@ pub struct NormalizedConfiguratePayload {
     pub keyring_entries: Option<Vec<KeyringEntry>>,
     pub keyring_options: Option<KeyringOptions>,
     pub with_unlock: bool,
+    pub return_data: bool,
 }
 
 impl ConfiguratePayload {
@@ -241,6 +245,7 @@ impl ConfiguratePayload {
             keyring_entries: self.keyring_entries,
             keyring_options: self.keyring_options,
             with_unlock: self.with_unlock,
+            return_data: self.return_data.unwrap_or(true),
         })
     }
 }
@@ -318,6 +323,7 @@ mod tests {
             keyring_entries: None,
             keyring_options: None,
             with_unlock: false,
+            return_data: None,
         }
     }
 

@@ -314,7 +314,11 @@ fn execute_create<R: Runtime>(
     }
 
     save_plain_data(app, &payload, &data)?;
-    Ok(unlocked_data.unwrap_or(data))
+    if payload.return_data {
+        Ok(unlocked_data.unwrap_or(data))
+    } else {
+        Ok(Value::Null)
+    }
 }
 
 fn execute_load<R: Runtime>(
@@ -356,16 +360,23 @@ fn execute_save<R: Runtime>(
     }
 
     save_plain_data(app, &payload, &data)?;
-    Ok(unlocked_data.unwrap_or(data))
+    if payload.return_data {
+        Ok(unlocked_data.unwrap_or(data))
+    } else {
+        Ok(Value::Null)
+    }
 }
 
 fn execute_delete<R: Runtime>(
     app: &AppHandle<R>,
     payload: NormalizedConfiguratePayload,
 ) -> Result<()> {
-    // Delete keyring entries first so secrets are wiped even if the main
-    // storage removal fails. All entries are attempted regardless of individual
-    // failures so that partial cleanup is maximised before returning an error.
+    // Delete storage first so that if it fails the keyring entries are
+    // preserved and the user can retry without data loss.
+    // If storage deletion succeeds but keyring cleanup fails later, the
+    // worst case is orphaned (but harmless) entries in the OS keyring.
+    delete_plain_data(app, &payload)?;
+
     if let Some((entries, opts)) =
         keyring_pair("delete", &payload.keyring_entries, &payload.keyring_options)?
     {
@@ -383,7 +394,7 @@ fn execute_delete<R: Runtime>(
         }
     }
 
-    delete_plain_data(app, &payload)
+    Ok(())
 }
 
 fn to_batch_error_value(error: &Error) -> Value {
