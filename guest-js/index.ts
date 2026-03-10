@@ -59,10 +59,7 @@ export function keyring<T, Id extends string>(
       `keyring() id '${opts.id}' must not contain '/' (it is used as a separator in the keyring user string).`,
     );
   }
-  const field = { _type: undefined as unknown as T, _id: opts.id } as Record<
-    string,
-    unknown
-  >;
+  const field = { _type: undefined as unknown as T, _id: opts.id } as Record<string, unknown>;
   field[KEYRING_BRAND_KEY] = true;
   return field as KeyringField<T, Id>;
 }
@@ -71,10 +68,7 @@ export function keyring<T, Id extends string>(
 // Schema definition
 // ---------------------------------------------------------------------------
 
-type PrimitiveConstructor =
-  | StringConstructor
-  | NumberConstructor
-  | BooleanConstructor;
+type PrimitiveConstructor = StringConstructor | NumberConstructor | BooleanConstructor;
 
 type InferPrimitive<C> = C extends StringConstructor
   ? string
@@ -84,10 +78,7 @@ type InferPrimitive<C> = C extends StringConstructor
       ? boolean
       : never;
 
-export type SchemaValue =
-  | PrimitiveConstructor
-  | KeyringField<unknown, string>
-  | SchemaObject;
+export type SchemaValue = PrimitiveConstructor | KeyringField<unknown, string> | SchemaObject;
 
 export type SchemaObject = { [key: string]: SchemaValue };
 
@@ -99,8 +90,7 @@ export type CollectKeyringIds<S extends SchemaObject> = {
       : never;
 }[keyof S];
 
-type IsDuplicate<T extends string, All extends string> =
-  T extends Exclude<All, T> ? true : false;
+type IsDuplicate<T extends string, All extends string> = T extends Exclude<All, T> ? true : false;
 
 export type HasDuplicateKeyringIds<S extends SchemaObject> = true extends {
   [Id in CollectKeyringIds<S>]: IsDuplicate<Id, CollectKeyringIds<S>>;
@@ -174,9 +164,7 @@ export function YmlProvider(): ConfigurateProvider {
   return createProvider({ kind: "yml" });
 }
 
-export function BinaryProvider(opts?: {
-  encryptionKey?: string;
-}): ConfigurateProvider {
+export function BinaryProvider(opts?: { encryptionKey?: string }): ConfigurateProvider {
   return createProvider({ kind: "binary", encryptionKey: opts?.encryptionKey });
 }
 
@@ -213,9 +201,7 @@ export interface KeyringOptions {
 // Internal runtime helpers
 // ---------------------------------------------------------------------------
 
-function isKeyringField(
-  val: SchemaValue,
-): val is KeyringField<unknown, string> {
+function isKeyringField(val: SchemaValue): val is KeyringField<unknown, string> {
   return (
     typeof val === "object" &&
     val !== null &&
@@ -239,10 +225,7 @@ function collectKeyringIds(schema: SchemaObject): string[] {
   return ids;
 }
 
-function collectKeyringPaths(
-  schema: SchemaObject,
-  prefix = "",
-): { id: string; dotpath: string }[] {
+function collectKeyringPaths(schema: SchemaObject, prefix = ""): { id: string; dotpath: string }[] {
   const result: { id: string; dotpath: string }[] = [];
   for (const [key, val] of Object.entries(schema)) {
     const path = prefix ? `${prefix}.${key}` : key;
@@ -283,8 +266,7 @@ function separateSecrets(
     const parent = node as Record<string, unknown>;
     if (last in parent) {
       const secret = parent[last];
-      const serialized =
-        typeof secret === "string" ? secret : JSON.stringify(secret);
+      const serialized = typeof secret === "string" ? secret : JSON.stringify(secret);
       keyringEntries.push({ id, dotpath, value: serialized });
       parent[last] = null;
     }
@@ -470,10 +452,7 @@ function normalizeConfigurateInit<S extends SchemaObject>(
     throw new Error('Configurate: "fileName" (or legacy "name") must be provided.');
   }
   if (input.fileName === undefined && input.name !== undefined) {
-    warnDeprecatedOnce(
-      "legacy-name",
-      '"name" is deprecated. Use "fileName" instead.',
-    );
+    warnDeprecatedOnce("legacy-name", '"name" is deprecated. Use "fileName" instead.');
   }
 
   const baseDir = input.baseDir ?? input.dir;
@@ -481,10 +460,7 @@ function normalizeConfigurateInit<S extends SchemaObject>(
     throw new Error('Configurate: "baseDir" (or legacy "dir") must be provided.');
   }
   if (input.baseDir === undefined && input.dir !== undefined) {
-    warnDeprecatedOnce(
-      "legacy-dir",
-      '"dir" is deprecated. Use "baseDir" instead.',
-    );
+    warnDeprecatedOnce("legacy-dir", '"dir" is deprecated. Use "baseDir" instead.');
   }
 
   let provider = input.provider;
@@ -552,9 +528,7 @@ function normalizeConfigurateInit<S extends SchemaObject>(
   if (options.dirName !== undefined) {
     const segments = options.dirName.split(/[\\/]/);
     if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) {
-      throw new Error(
-        'Configurate: "options.dirName" must not contain empty or special segments.',
-      );
+      throw new Error('Configurate: "options.dirName" must not contain empty or special segments.');
     }
   }
   if (options.currentPath !== undefined) {
@@ -593,6 +567,7 @@ interface BatchConfigLike {
     data: unknown,
     keyringOpts: KeyringOptions | null,
     withUnlock: boolean,
+    returnData?: boolean,
   ): Record<string, unknown>;
 }
 
@@ -612,10 +587,7 @@ export class LockedConfig<S extends SchemaObject> {
   }
 
   async unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
-    return this._configurate._unlockFromData(
-      this.data as Record<string, unknown>,
-      opts,
-    );
+    return this._configurate._unlockFromData(this.data as Record<string, unknown>, opts);
   }
 }
 
@@ -629,9 +601,7 @@ export class UnlockedConfig<S extends SchemaObject> {
 
   get data(): InferUnlocked<S> {
     if (this._data === null) {
-      throw new Error(
-        "Cannot access data after lock() has been called. Load or unlock again.",
-      );
+      throw new Error("Cannot access data after lock() has been called. Load or unlock again.");
     }
     return this._data;
   }
@@ -665,11 +635,7 @@ export class LazyConfigEntry<S extends SchemaObject> {
   }
 
   run(): Promise<LockedConfig<S>> {
-    return this._configurate._executeLocked(
-      this._op,
-      this._data,
-      this._keyringOpts,
-    );
+    return this._configurate._executeLocked(this._op, this._data, this._keyringOpts);
   }
 
   unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
@@ -790,6 +756,7 @@ class SaveAllBuilder {
             entry.data as InferUnlocked<SchemaObject>,
             lockOpts,
             false,
+            false,
           ),
         };
       }),
@@ -809,9 +776,7 @@ export class Configurate<S extends SchemaObject> {
   private readonly _keyringPaths: { id: string; dotpath: string }[];
   private readonly _sqliteColumns: SqliteColumn[];
 
-  constructor(
-    opts: ConfigurateInit<S>,
-  );
+  constructor(opts: ConfigurateInit<S>);
   constructor(
     schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
     opts: LegacyConfigurateOptions,
@@ -825,13 +790,10 @@ export class Configurate<S extends SchemaObject> {
     const normalized =
       legacyOpts === undefined
         ? normalizeConfigurateInit(schemaOrOpts as ConfigurateCompatInit<S>)
-        : normalizeConfigurateInit(
-            {
-              schema: schemaOrOpts as S &
-                (true extends HasDuplicateKeyringIds<S> ? never : unknown),
-              ...legacyOpts,
-            } as ConfigurateCompatInit<S>,
-          );
+        : normalizeConfigurateInit({
+            schema: schemaOrOpts as S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
+            ...legacyOpts,
+          } as ConfigurateCompatInit<S>);
 
     if (legacyOpts !== undefined) {
       warnDeprecatedOnce(
@@ -877,11 +839,21 @@ export class Configurate<S extends SchemaObject> {
     data: InferUnlocked<S> | undefined,
     keyringOpts: KeyringOptions | null,
   ): Promise<LockedConfig<S>> {
-    const payload = this._buildPayload(op, data, keyringOpts, false);
-    const result = await invoke<InferLocked<S>>(`plugin:configurate|${op}`, {
+    if (op === "load") {
+      const payload = this._buildPayload(op, data, keyringOpts, false);
+      const result = await invoke<InferLocked<S>>(`plugin:configurate|${op}`, {
+        payload,
+      });
+      return new LockedConfig(result, this);
+    }
+
+    const payload = this._buildPayload(op, data, keyringOpts, false, false);
+    await invoke(`plugin:configurate|${op}`, {
       payload,
     });
-    return new LockedConfig(result, this);
+
+    const plain = (payload.data ?? {}) as InferLocked<S>;
+    return new LockedConfig(plain, this);
   }
 
   /** @internal */
@@ -928,6 +900,7 @@ export class Configurate<S extends SchemaObject> {
     data: unknown,
     keyringOpts: KeyringOptions | null,
     withUnlock: boolean,
+    returnData = true,
   ): Record<string, unknown> {
     const provider: ProviderPayload =
       this._opts.provider.kind === "binary"
@@ -948,8 +921,12 @@ export class Configurate<S extends SchemaObject> {
       baseDir: this._opts.baseDir as number,
       provider,
       withUnlock,
-      schemaColumns: this._sqliteColumns,
+      returnData,
     };
+
+    if (this._opts.provider.kind === "sqlite") {
+      base.schemaColumns = this._sqliteColumns;
+    }
 
     if (this._opts.options !== undefined) {
       base.options = {
@@ -971,14 +948,24 @@ export class Configurate<S extends SchemaObject> {
     }
 
     if (data !== undefined) {
-      const { plain, keyringEntries } = separateSecrets(
-        data as Record<string, unknown>,
-        this._keyringPaths,
-      );
-      base.data = plain;
-      if (keyringOpts && keyringEntries.length > 0) {
-        base.keyringEntries = keyringEntries;
-        base.keyringOptions = keyringOpts;
+      if (this._keyringPaths.length === 0) {
+        // No keyring fields — skip the deep clone in separateSecrets.
+        base.data = data;
+      } else {
+        if (keyringOpts === null) {
+          throw new Error(
+            "Configurate: schema contains keyring fields — use .lock(opts) before .run(), or .unlock(opts), for create/save operations.",
+          );
+        }
+        const { plain, keyringEntries } = separateSecrets(
+          data as Record<string, unknown>,
+          this._keyringPaths,
+        );
+        base.data = plain;
+        if (keyringEntries.length > 0) {
+          base.keyringEntries = keyringEntries;
+          base.keyringOptions = keyringOpts;
+        }
       }
     }
 
@@ -1016,9 +1003,7 @@ interface NormalizedFactoryBase {
 function normalizeFactoryBase(base: ConfigurateFactoryBaseOptions): NormalizedFactoryBase {
   const baseDir = base.baseDir ?? base.dir;
   if (baseDir === undefined) {
-    throw new Error(
-      'ConfigurateFactory: "baseDir" (or legacy "dir") must be provided.',
-    );
+    throw new Error('ConfigurateFactory: "baseDir" (or legacy "dir") must be provided.');
   }
 
   if (base.baseDir === undefined && base.dir !== undefined) {
@@ -1036,9 +1021,7 @@ function normalizeFactoryBase(base: ConfigurateFactoryBaseOptions): NormalizedFa
   }
   if (!provider) {
     if (!base.format) {
-      throw new Error(
-        'ConfigurateFactory: "provider" is required (or legacy "format").',
-      );
+      throw new Error('ConfigurateFactory: "provider" is required (or legacy "format").');
     }
     warnDeprecatedOnce(
       "legacy-factory-format",
