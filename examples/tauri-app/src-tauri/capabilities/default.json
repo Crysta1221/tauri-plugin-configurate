@@ -8,6 +8,9 @@
     "configurate:allow-create",
     "configurate:allow-load",
     "configurate:allow-save",
-    "configurate:allow-delete"
+    "configurate:allow-delete",
+    "configurate:allow-load-all",
+    "configurate:allow-save-all",
+    "configurate:allow-unlock"
   ]
 }
