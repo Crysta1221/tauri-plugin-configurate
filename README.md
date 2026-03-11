@@ -189,7 +189,7 @@ import {
   YmlProvider,
   BinaryProvider,
   SqliteProvider,
-} from "tauri-plugin-configurate-api";
+} from "tauri-plugin-configurate-api/provider";
 
 // Plain JSON (human-readable)
 JsonProvider();
