@@ -78,7 +78,15 @@ type InferPrimitive<C> = C extends StringConstructor
       ? boolean
       : never;
 
-export type SchemaValue = PrimitiveConstructor | KeyringField<unknown, string> | SchemaObject;
+type SchemaArrayElement = PrimitiveConstructor | KeyringField<unknown, string> | SchemaObject;
+
+export type SchemaArray = readonly [SchemaArrayElement];
+
+export type SchemaValue =
+  | PrimitiveConstructor
+  | KeyringField<unknown, string>
+  | SchemaObject
+  | SchemaArray;
 
 export type SchemaObject = { [key: string]: SchemaValue };
 
@@ -101,6 +109,14 @@ export type HasDuplicateKeyringIds<S extends SchemaObject> = true extends {
 export type InferLocked<S extends SchemaObject> = {
   [K in keyof S]: S[K] extends KeyringField<unknown, string>
     ? null
+    : S[K] extends SchemaArray
+      ? S[K][0] extends KeyringField<unknown, string>
+        ? null[]
+        : S[K][0] extends PrimitiveConstructor
+        ? InferPrimitive<S[K][0]>[]
+        : S[K][0] extends SchemaObject
+          ? InferLocked<S[K][0]>[]
+          : never
     : S[K] extends SchemaObject
       ? InferLocked<S[K]>
       : S[K] extends PrimitiveConstructor
@@ -111,6 +127,14 @@ export type InferLocked<S extends SchemaObject> = {
 export type InferUnlocked<S extends SchemaObject> = {
   [K in keyof S]: S[K] extends KeyringField<infer T, string>
     ? T
+    : S[K] extends SchemaArray
+      ? S[K][0] extends KeyringField<infer T, string>
+        ? T[]
+        : S[K][0] extends PrimitiveConstructor
+        ? InferPrimitive<S[K][0]>[]
+        : S[K][0] extends SchemaObject
+          ? InferUnlocked<S[K][0]>[]
+          : never
     : S[K] extends SchemaObject
       ? InferUnlocked<S[K]>
       : S[K] extends PrimitiveConstructor
@@ -209,8 +233,234 @@ function isKeyringField(val: SchemaValue): val is KeyringField<unknown, string> 
   );
 }
 
+function isPrimitiveConstructor(val: unknown): val is PrimitiveConstructor {
+  return val === String || val === Number || val === Boolean;
+}
+
+function isSchemaArrayElement(val: unknown): val is SchemaArrayElement {
+  if (isPrimitiveConstructor(val)) {
+    return true;
+  }
+  if (isKeyringField(val as SchemaValue)) {
+    return true;
+  }
+  return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
+function isSchemaArray(val: SchemaValue): val is SchemaArray {
+  return Array.isArray(val) && val.length === 1 && isSchemaArrayElement(val[0]);
+}
+
 function isSchemaObject(val: SchemaValue): val is SchemaObject {
-  return typeof val === "object" && val !== null && !isKeyringField(val);
+  return typeof val === "object" && val !== null && !Array.isArray(val) && !isKeyringField(val);
+}
+
+type KeyringPath = Array<string | number>;
+type KeyringPayloadEntry = { id: string; dotpath: string; value: string };
+
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
+function validateSchemaArrays(schema: SchemaObject, prefix = ""): void {
+  for (const [key, val] of Object.entries(schema)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (Array.isArray(val) && !isSchemaArray(val as SchemaValue)) {
+      throw new Error(
+        `Invalid array schema at '${path}'. Arrays must contain exactly one element schema, e.g. [String] or [{ field: String }].`,
+      );
+    }
+    if (isSchemaObject(val)) {
+      validateSchemaArrays(val, path);
+      continue;
+    }
+    if (isSchemaArray(val) && isSchemaObject(val[0])) {
+      validateSchemaArrays(val[0], `${path}[]`);
+    }
+  }
+}
+
+function hasAnyKeyring(schema: SchemaObject): boolean {
+  for (const val of Object.values(schema)) {
+    if (isKeyringField(val)) {
+      return true;
+    }
+    if (isSchemaObject(val) && hasAnyKeyring(val)) {
+      return true;
+    }
+    if (isSchemaArray(val)) {
+      const element = val[0];
+      if (isKeyringField(element)) {
+        return true;
+      }
+      if (isSchemaObject(element) && hasAnyKeyring(element)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasArrayKeyring(schema: SchemaObject): boolean {
+  for (const val of Object.values(schema)) {
+    if (isSchemaObject(val) && hasArrayKeyring(val)) {
+      return true;
+    }
+    if (!isSchemaArray(val)) {
+      continue;
+    }
+    const element = val[0];
+    if (isKeyringField(element)) {
+      return true;
+    }
+    if (isSchemaObject(element) && hasAnyKeyring(element)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function dotpathFromPath(path: KeyringPath): string {
+  return path.map((segment) => segment.toString()).join(".");
+}
+
+function keyringEntryId(baseId: string, path: KeyringPath): string {
+  const dotpath = dotpathFromPath(path);
+  if (!path.some((segment) => typeof segment === "number")) {
+    return baseId;
+  }
+  return `${baseId}::${encodeURIComponent(dotpath)}`;
+}
+
+function serializeKeyringValue(secret: unknown): string {
+  if (typeof secret === "string") {
+    return secret;
+  }
+  return JSON.stringify(secret) ?? "null";
+}
+
+function collectReadEntriesInArray(
+  elementSchema: SchemaArrayElement,
+  node: unknown,
+  path: KeyringPath,
+  entries: KeyringPayloadEntry[],
+): void {
+  if (!Array.isArray(node)) {
+    return;
+  }
+
+  for (let idx = 0; idx < node.length; idx++) {
+    const elementPath = [...path, idx];
+    const elementNode = node[idx];
+    if (isKeyringField(elementSchema)) {
+      entries.push({
+        id: keyringEntryId(elementSchema._id, elementPath),
+        dotpath: dotpathFromPath(elementPath),
+        value: "",
+      });
+      continue;
+    }
+    if (isSchemaObject(elementSchema)) {
+      collectReadEntriesInObject(elementSchema, elementNode, elementPath, entries, true);
+    }
+  }
+}
+
+function collectReadEntriesInObject(
+  schema: SchemaObject,
+  node: unknown,
+  path: KeyringPath,
+  entries: KeyringPayloadEntry[],
+  requireObjectNode: boolean,
+): void {
+  const objectNode = isPlainObject(node) ? node : null;
+  if (requireObjectNode && objectNode === null) {
+    return;
+  }
+
+  for (const [key, valueSchema] of Object.entries(schema)) {
+    const keyPath = [...path, key];
+    if (isKeyringField(valueSchema)) {
+      entries.push({
+        id: keyringEntryId(valueSchema._id, keyPath),
+        dotpath: dotpathFromPath(keyPath),
+        value: "",
+      });
+      continue;
+    }
+
+    const childNode = objectNode?.[key];
+    if (isSchemaObject(valueSchema)) {
+      collectReadEntriesInObject(valueSchema, childNode, keyPath, entries, requireObjectNode);
+      continue;
+    }
+    if (isSchemaArray(valueSchema)) {
+      collectReadEntriesInArray(valueSchema[0], childNode, keyPath, entries);
+    }
+  }
+}
+
+function collectWriteEntriesInArray(
+  elementSchema: SchemaArrayElement,
+  node: unknown,
+  path: KeyringPath,
+  entries: KeyringPayloadEntry[],
+): void {
+  if (!Array.isArray(node)) {
+    return;
+  }
+
+  for (let idx = 0; idx < node.length; idx++) {
+    const elementPath = [...path, idx];
+    if (isKeyringField(elementSchema)) {
+      const secret = node[idx];
+      entries.push({
+        id: keyringEntryId(elementSchema._id, elementPath),
+        dotpath: dotpathFromPath(elementPath),
+        value: serializeKeyringValue(secret),
+      });
+      node[idx] = null;
+      continue;
+    }
+    if (isSchemaObject(elementSchema)) {
+      collectWriteEntriesInObject(elementSchema, node[idx], elementPath, entries);
+    }
+  }
+}
+
+function collectWriteEntriesInObject(
+  schema: SchemaObject,
+  node: unknown,
+  path: KeyringPath,
+  entries: KeyringPayloadEntry[],
+): void {
+  if (!isPlainObject(node)) {
+    return;
+  }
+
+  for (const [key, valueSchema] of Object.entries(schema)) {
+    const keyPath = [...path, key];
+    if (isKeyringField(valueSchema)) {
+      if (!(key in node)) {
+        continue;
+      }
+      const secret = node[key];
+      entries.push({
+        id: keyringEntryId(valueSchema._id, keyPath),
+        dotpath: dotpathFromPath(keyPath),
+        value: serializeKeyringValue(secret),
+      });
+      node[key] = null;
+      continue;
+    }
+    if (isSchemaObject(valueSchema)) {
+      collectWriteEntriesInObject(valueSchema, node[key], keyPath, entries);
+      continue;
+    }
+    if (isSchemaArray(valueSchema)) {
+      collectWriteEntriesInArray(valueSchema[0], node[key], keyPath, entries);
+    }
+  }
 }
 
 function collectKeyringIds(schema: SchemaObject): string[] {
@@ -218,59 +468,61 @@ function collectKeyringIds(schema: SchemaObject): string[] {
   for (const val of Object.values(schema)) {
     if (isKeyringField(val)) {
       ids.push(val._id);
-    } else if (isSchemaObject(val)) {
+      continue;
+    }
+    if (isSchemaObject(val)) {
       ids.push(...collectKeyringIds(val));
+      continue;
+    }
+    if (isSchemaArray(val)) {
+      const element = val[0];
+      if (isKeyringField(element)) {
+        ids.push(element._id);
+      } else if (isSchemaObject(element)) {
+        ids.push(...collectKeyringIds(element));
+      }
     }
   }
   return ids;
 }
 
-function collectKeyringPaths(schema: SchemaObject, prefix = ""): { id: string; dotpath: string }[] {
-  const result: { id: string; dotpath: string }[] = [];
-  for (const [key, val] of Object.entries(schema)) {
+function collectStaticKeyringPaths(
+  schema: SchemaObject,
+  prefix = "",
+): Array<{ id: string; dotpath: string }> {
+  const result: Array<{ id: string; dotpath: string }> = [];
+  for (const [key, valueSchema] of Object.entries(schema)) {
     const path = prefix ? `${prefix}.${key}` : key;
-    if (isKeyringField(val)) {
-      result.push({ id: val._id, dotpath: path });
-    } else if (isSchemaObject(val)) {
-      result.push(...collectKeyringPaths(val, path));
+    if (isKeyringField(valueSchema)) {
+      result.push({ id: valueSchema._id, dotpath: path });
+      continue;
+    }
+    if (isSchemaObject(valueSchema)) {
+      result.push(...collectStaticKeyringPaths(valueSchema, path));
     }
   }
   return result;
 }
 
-function separateSecrets(
+function collectKeyringReadEntries(
+  schema: SchemaObject,
   data: Record<string, unknown>,
-  keyringPaths: { id: string; dotpath: string }[],
+): KeyringPayloadEntry[] {
+  const entries: KeyringPayloadEntry[] = [];
+  collectReadEntriesInObject(schema, data, [], entries, false);
+  return entries;
+}
+
+function separateSecrets(
+  schema: SchemaObject,
+  data: Record<string, unknown>,
 ): {
   plain: Record<string, unknown>;
-  keyringEntries: Array<{ id: string; dotpath: string; value: string }>;
+  keyringEntries: KeyringPayloadEntry[];
 } {
   const plain = structuredClone(data) as Record<string, unknown>;
-  const keyringEntries: Array<{ id: string; dotpath: string; value: string }> = [];
-
-  for (const { id, dotpath } of keyringPaths) {
-    const parts = dotpath.split(".");
-    let node: unknown = plain;
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (node === null || typeof node !== "object") {
-        break;
-      }
-      node = (node as Record<string, unknown>)[parts[i] ?? ""];
-    }
-
-    if (node === null || typeof node !== "object") {
-      continue;
-    }
-
-    const last = parts.at(-1) ?? "";
-    const parent = node as Record<string, unknown>;
-    if (last in parent) {
-      const secret = parent[last];
-      const serialized = typeof secret === "string" ? secret : JSON.stringify(secret);
-      keyringEntries.push({ id, dotpath, value: serialized });
-      parent[last] = null;
-    }
-  }
+  const keyringEntries: KeyringPayloadEntry[] = [];
+  collectWriteEntriesInObject(schema, plain, [], keyringEntries);
 
   return { plain, keyringEntries };
 }
@@ -309,6 +561,16 @@ function collectSqliteColumns(
 
     if (isSchemaObject(val)) {
       collectSqliteColumns(val, dotpath, out);
+      continue;
+    }
+
+    if (isSchemaArray(val)) {
+      out.push({
+        columnName: dotpathToColumnName(dotpath),
+        dotpath,
+        valueType: "string",
+        isKeyring: false,
+      });
       continue;
     }
 
@@ -569,6 +831,7 @@ interface BatchConfigLike {
     withUnlock: boolean,
     returnData?: boolean,
   ): Record<string, unknown>;
+  _unlockLoadedData(data: unknown, keyringOpts: KeyringOptions): Promise<unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -703,15 +966,33 @@ class LoadAllBuilder {
   async run(): Promise<BatchRunResult> {
     const payload = {
       entries: this._entries.map((entry) => {
-        const unlockOpts = this._unlockById.get(entry.id) ?? this._unlockAll;
         return {
           id: entry.id,
-          payload: entry.config._buildPayload("load", undefined, unlockOpts, unlockOpts !== null),
+          payload: entry.config._buildPayload("load", undefined, null, false),
         };
       }),
     };
 
-    return invoke<BatchRunResult>("plugin:configurate|load_all", { payload });
+    const batchResult = await invoke<BatchRunResult>("plugin:configurate|load_all", { payload });
+
+    await Promise.all(
+      this._entries.map(async (entry) => {
+        const unlockOpts = this._unlockById.get(entry.id) ?? this._unlockAll;
+        if (unlockOpts === null) {
+          return;
+        }
+
+        const result = batchResult.results[entry.id];
+        if (!result || !result.ok) {
+          return;
+        }
+
+        const unlockedData = await entry.config._unlockLoadedData(result.data, unlockOpts);
+        batchResult.results[entry.id] = { ok: true, data: unlockedData };
+      }),
+    );
+
+    return batchResult;
   }
 }
 
@@ -774,6 +1055,8 @@ export class Configurate<S extends SchemaObject> {
   private readonly _schema: S;
   private readonly _opts: NormalizedConfigurateInit<S>;
   private readonly _keyringPaths: { id: string; dotpath: string }[];
+  private readonly _hasKeyringFields: boolean;
+  private readonly _hasArrayKeyring: boolean;
   private readonly _sqliteColumns: SqliteColumn[];
 
   constructor(opts: ConfigurateInit<S>);
@@ -803,8 +1086,11 @@ export class Configurate<S extends SchemaObject> {
     }
 
     this._schema = normalized.schema;
+    validateSchemaArrays(this._schema);
     this._opts = normalized;
-    this._keyringPaths = collectKeyringPaths(this._schema);
+    this._keyringPaths = collectStaticKeyringPaths(this._schema);
+    this._hasKeyringFields = hasAnyKeyring(this._schema);
+    this._hasArrayKeyring = hasArrayKeyring(this._schema);
     this._sqliteColumns = collectSqliteColumns(this._schema);
   }
 
@@ -829,7 +1115,36 @@ export class Configurate<S extends SchemaObject> {
   }
 
   async delete(opts?: KeyringOptions | null): Promise<void> {
-    const payload = this._buildPayload("delete", undefined, opts ?? null, false);
+    const keyringOpts = opts ?? null;
+    const payload = this._buildPayload("delete", undefined, null, false);
+
+    if (keyringOpts !== null && this._hasKeyringFields) {
+      let keyringEntries = this._keyringPaths.map(({ id, dotpath }) => ({
+        id,
+        dotpath,
+        value: "",
+      }));
+
+      if (this._hasArrayKeyring) {
+        try {
+          const loadPayload = this._buildPayload("load", undefined, null, false);
+          const plainData = await invoke<unknown>("plugin:configurate|load", {
+            payload: loadPayload,
+          });
+          if (isPlainObject(plainData)) {
+            keyringEntries = collectKeyringReadEntries(this._schema, plainData);
+          }
+        } catch {
+          // Keep static non-array keyring entries as fallback.
+        }
+      }
+
+      if (keyringEntries.length > 0) {
+        payload.keyringEntries = keyringEntries;
+        payload.keyringOptions = keyringOpts;
+      }
+    }
+
     await invoke("plugin:configurate|delete", { payload });
   }
 
@@ -862,6 +1177,14 @@ export class Configurate<S extends SchemaObject> {
     data: InferUnlocked<S> | undefined,
     keyringOpts: KeyringOptions,
   ): Promise<UnlockedConfig<S>> {
+    if (op === "load") {
+      const payload = this._buildPayload("load", data, null, false);
+      const plain = await invoke<Record<string, unknown>>("plugin:configurate|load", {
+        payload,
+      });
+      return this._unlockFromData(plain, keyringOpts);
+    }
+
     const payload = this._buildPayload(op, data, keyringOpts, true);
     const result = await invoke<InferUnlocked<S>>(`plugin:configurate|${op}`, {
       payload,
@@ -870,21 +1193,38 @@ export class Configurate<S extends SchemaObject> {
   }
 
   /** @internal */
+  async _unlockLoadedData(data: unknown, keyringOpts: KeyringOptions): Promise<unknown> {
+    if (!isPlainObject(data)) {
+      return data;
+    }
+    const unlocked = await this._unlockFromData(data, keyringOpts);
+    return unlocked.data;
+  }
+
+  /** @internal */
   async _unlockFromData(
     plainData: Record<string, unknown>,
     opts: KeyringOptions,
   ): Promise<UnlockedConfig<S>> {
-    if (this._keyringPaths.length === 0) {
+    if (!this._hasKeyringFields) {
+      return new UnlockedConfig(plainData as InferUnlocked<S>);
+    }
+
+    const keyringEntries = this._hasArrayKeyring
+      ? collectKeyringReadEntries(this._schema, plainData)
+      : this._keyringPaths.map(({ id, dotpath }) => ({
+          id,
+          dotpath,
+          value: "",
+        }));
+
+    if (keyringEntries.length === 0) {
       return new UnlockedConfig(plainData as InferUnlocked<S>);
     }
 
     const payload = {
       data: plainData,
-      keyringEntries: this._keyringPaths.map(({ id, dotpath }) => ({
-        id,
-        dotpath,
-        value: "",
-      })),
+      keyringEntries,
       keyringOptions: opts,
     };
 
@@ -948,7 +1288,7 @@ export class Configurate<S extends SchemaObject> {
     }
 
     if (data !== undefined) {
-      if (this._keyringPaths.length === 0) {
+      if (!this._hasKeyringFields) {
         // No keyring fields — skip the deep clone in separateSecrets.
         base.data = data;
       } else {
@@ -958,8 +1298,8 @@ export class Configurate<S extends SchemaObject> {
           );
         }
         const { plain, keyringEntries } = separateSecrets(
+          this._schema,
           data as Record<string, unknown>,
-          this._keyringPaths,
         );
         base.data = plain;
         if (keyringEntries.length > 0) {
@@ -1115,6 +1455,7 @@ export class ConfigurateFactory {
 export function defineConfig<S extends SchemaObject>(
   schema: S & (true extends HasDuplicateKeyringIds<S> ? never : unknown),
 ): S {
+  validateSchemaArrays(schema as SchemaObject);
   const ids = collectKeyringIds(schema as SchemaObject);
   const seen = new Set<string>();
   for (const id of ids) {

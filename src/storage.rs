@@ -698,4 +698,25 @@ mod tests {
         assert_eq!(loaded["enabled"], true);
         assert_eq!(loaded["secret"], Value::Null);
     }
+
+    #[test]
+    fn sqlite_roundtrip_array_value_in_string_column() {
+        let dir = TempDir::new().unwrap();
+        let path = tmp_path(&dir, "cfg-array.db");
+
+        let columns = vec![SqliteColumn {
+            column_name: "tags".to_string(),
+            dotpath: "tags".to_string(),
+            value_type: SqliteValueType::String,
+            is_keyring: false,
+        }];
+
+        let value = json!({
+            "tags": ["alpha", "beta", "gamma"],
+        });
+
+        write_sqlite(&path, "configurate_configs", "array.json", &value, &columns).unwrap();
+        let loaded = read_sqlite(&path, "configurate_configs", "array.json", &columns).unwrap();
+        assert_eq!(loaded["tags"], json!(["alpha", "beta", "gamma"]));
+    }
 }

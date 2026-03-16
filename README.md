@@ -121,6 +121,34 @@ const appSchema = defineConfig({
 
 `defineConfig()` validates at runtime that all `keyring()` IDs are unique within the schema.
 
+You can also define array schemas with a single element descriptor:
+
+```ts
+const schema = defineConfig({
+  tags: [String],
+  timetable: [
+    {
+      time: String,
+      token: keyring(String, { id: "timetable-token" }),
+      xxx: String,
+      loc_by: {
+        bus: {
+          mix: Number,
+          min: Number,
+        },
+        bike: {
+          mix: Number,
+          min: Number,
+        },
+      },
+    },
+  ],
+});
+```
+
+Array elements with `keyring()` are supported. The plugin stores each element with
+an index-aware keyring id under the hood.
+
 ### Step 2 — Create a `Configurate` instance
 
 ```ts
