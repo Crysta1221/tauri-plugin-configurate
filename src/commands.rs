@@ -1016,8 +1016,8 @@ pub(crate) async fn reset<R: Runtime>(
     let change_event = build_change_event(&normalized, "reset");
     let lock = acquire_file_lock(&app, &normalized);
     let _guard = lock.as_ref().map(|l| l.lock().unwrap_or_else(|e| e.into_inner()));
-    // Delete then create = reset.
-    let _ = delete_plain_data(&app, &normalized);
+    // Delete then create = reset. Propagate errors so failures are not silently ignored.
+    delete_plain_data(&app, &normalized)?;
     let result = execute_create(&app, normalized)?;
     drop(_guard);
     emit_change(&app, change_event);
