@@ -44,7 +44,28 @@ impl Serialize for Error {
         S: Serializer,
     {
         use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(2))?;
+
+        // For IO errors, include a stable `io_kind` sub-field so the frontend
+        // can distinguish "not found" from "permission denied" without parsing
+        // the human-readable message string.
+        let io_kind: Option<&'static str> = if let Error::Io(e) = self {
+            Some(match e.kind() {
+                std::io::ErrorKind::NotFound => "not_found",
+                std::io::ErrorKind::PermissionDenied => "permission_denied",
+                std::io::ErrorKind::AlreadyExists => "already_exists",
+                std::io::ErrorKind::WouldBlock => "would_block",
+                std::io::ErrorKind::InvalidInput => "invalid_input",
+                std::io::ErrorKind::TimedOut => "timed_out",
+                std::io::ErrorKind::Interrupted => "interrupted",
+                std::io::ErrorKind::OutOfMemory => "out_of_memory",
+                _ => "other",
+            })
+        } else {
+            None
+        };
+
+        let field_count = if io_kind.is_some() { 3 } else { 2 };
+        let mut map = serializer.serialize_map(Some(field_count))?;
         let kind = match self {
             Error::Io(_) => "io",
             Error::Storage(_) => "storage",
@@ -57,6 +78,9 @@ impl Serialize for Error {
         };
         map.serialize_entry("kind", kind)?;
         map.serialize_entry("message", &self.to_string())?;
+        if let Some(ik) = io_kind {
+            map.serialize_entry("io_kind", ik)?;
+        }
         map.end()
     }
 }

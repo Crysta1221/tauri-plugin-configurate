@@ -7,10 +7,19 @@ Default permissions for the plugin
 - `allow-create`
 - `allow-load`
 - `allow-save`
+- `allow-patch`
 - `allow-delete`
+- `allow-exists`
 - `allow-load-all`
 - `allow-save-all`
+- `allow-patch-all`
 - `allow-unlock`
+- `allow-watch-file`
+- `allow-unwatch-file`
+- `allow-list-configs`
+- `allow-reset`
+- `allow-export-config`
+- `allow-import-config`
 
 ## Permission Table
 
@@ -76,6 +85,110 @@ Denies the delete command without any pre-configured scope.
 <tr>
 <td>
 
+`configurate:allow-exists`
+
+</td>
+<td>
+
+Enables the exists command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-exists`
+
+</td>
+<td>
+
+Denies the exists command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:allow-export-config`
+
+</td>
+<td>
+
+Enables the export_config command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-export-config`
+
+</td>
+<td>
+
+Denies the export_config command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:allow-import-config`
+
+</td>
+<td>
+
+Enables the import_config command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-import-config`
+
+</td>
+<td>
+
+Denies the import_config command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:allow-list-configs`
+
+</td>
+<td>
+
+Enables the list_configs command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-list-configs`
+
+</td>
+<td>
+
+Denies the list_configs command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `configurate:allow-load`
 
 </td>
@@ -121,6 +234,84 @@ Enables the load_all command without any pre-configured scope.
 <td>
 
 Denies the load_all command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:allow-patch`
+
+</td>
+<td>
+
+Enables the patch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-patch`
+
+</td>
+<td>
+
+Denies the patch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:allow-patch-all`
+
+</td>
+<td>
+
+Enables the patch_all command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-patch-all`
+
+</td>
+<td>
+
+Denies the patch_all command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:allow-reset`
+
+</td>
+<td>
+
+Enables the reset command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-reset`
+
+</td>
+<td>
+
+Denies the reset command without any pre-configured scope.
 
 </td>
 </tr>
@@ -199,6 +390,58 @@ Enables the unlock command without any pre-configured scope.
 <td>
 
 Denies the unlock command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:allow-unwatch-file`
+
+</td>
+<td>
+
+Enables the unwatch_file command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-unwatch-file`
+
+</td>
+<td>
+
+Denies the unwatch_file command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:allow-watch-file`
+
+</td>
+<td>
+
+Enables the watch_file command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`configurate:deny-watch-file`
+
+</td>
+<td>
+
+Denies the watch_file command without any pre-configured scope.
 
 </td>
 </tr>

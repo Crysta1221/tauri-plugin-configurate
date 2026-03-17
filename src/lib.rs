@@ -14,8 +14,10 @@ mod commands;
 mod dotpath;
 mod error;
 mod keyring_store;
+mod locker;
 mod models;
 mod storage;
+mod watcher;
 
 pub use error::{Error, Result};
 
@@ -43,10 +45,19 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::create,
             commands::load,
             commands::save,
+            commands::patch,
             commands::delete,
+            commands::exists,
             commands::load_all,
             commands::save_all,
+            commands::patch_all,
             commands::unlock,
+            commands::watch_file,
+            commands::unwatch_file,
+            commands::list_configs,
+            commands::reset,
+            commands::export_config,
+            commands::import_config,
         ])
         .setup(|app, api| {
             #[cfg(mobile)]
@@ -54,6 +65,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             #[cfg(desktop)]
             let configurate = desktop::init(app, api)?;
             app.manage(configurate);
+            app.manage(locker::FileLockRegistry::new());
+            let watcher_state = watcher::WatcherState::new(app.clone())?;
+            app.manage(watcher_state);
             Ok(())
         })
         .build()
