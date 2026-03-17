@@ -795,13 +795,29 @@ fn execute_patch<R: Runtime>(
         None
     };
 
-    if let Some((entries, opts)) =
-        keyring_pair("patch", &payload.keyring_entries, &payload.keyring_options)?
-    {
-        apply_keyring_writes(&mut existing, entries, opts)?;
+    let keyring = keyring_pair("patch", &payload.keyring_entries, &payload.keyring_options)?;
+
+    // Nullify secrets in the on-disk data before saving.
+    if let Some((entries, _opts)) = &keyring {
+        for entry in *entries {
+            dotpath::nullify(&mut existing, &entry.dotpath)?;
+        }
     }
 
+    // Persist plain data first so that if it fails, the keyring is not updated.
     save_plain_data(app, &payload, &existing)?;
+
+    // Only write secrets to the OS keyring after successful storage write.
+    if let Some((entries, opts)) = keyring {
+        for entry in entries {
+            keyring_store::set(opts, &entry.id, &entry.value)?;
+        }
+    }
+
+    cleanup_stale_keyring_entries(
+        &payload.keyring_delete_ids,
+        payload.keyring_options.as_ref(),
+    )?;
     if payload.return_data {
         Ok(unlocked_data.unwrap_or(existing))
     } else {
