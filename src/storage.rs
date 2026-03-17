@@ -1,5 +1,7 @@
 /// Storage backend trait and concrete implementations for JSON, YAML, Binary, and EncryptedBinary.
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::{Rng, RngExt};
@@ -15,16 +17,55 @@ use crate::models::{NormalizedProvider, SqliteColumn, SqliteValueType};
 
 const SQLITE_JSON_BLOB_COLUMN: &str = "__config_json_blob";
 
+/// Tracks paths for which backup files have been created so they can be
+/// cleaned up when the application exits.
+pub struct BackupRegistry(Mutex<HashSet<std::path::PathBuf>>);
+
+impl BackupRegistry {
+    pub fn new() -> Self {
+        Self(Mutex::new(HashSet::new()))
+    }
+
+    fn register(&self, path: &Path) {
+        if let Ok(mut set) = self.0.lock() {
+            set.insert(path.to_path_buf());
+        }
+    }
+
+    /// Deletes all `.bakN` files associated with every registered path.
+    pub fn cleanup_all(&self) {
+        let set = match self.0.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        for path in set.iter() {
+            let base_ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            for n in 1..=BACKUP_COUNT {
+                let ext = if base_ext.is_empty() {
+                    format!("bak{}", n)
+                } else {
+                    format!("{}.bak{}", base_ext, n)
+                };
+                let _ = std::fs::remove_file(path.with_extension(&ext));
+            }
+        }
+    }
+}
+
 /// Maximum number of rolling backup files to keep per config file.
 const BACKUP_COUNT: u32 = 3;
 
-/// Creates a rolling backup of the file at `path` (up to `BACKUP_COUNT` copies).
+/// Creates a rolling backup of the file at `path` (up to `BACKUP_COUNT` copies)
+/// and registers the path in `registry` so backups can be cleaned up on exit.
 ///
 /// Backups are named `<file>.<ext>.bak1`, `…bak2`, `…bak3`.
 /// On each write the oldest slot is discarded and newer slots are shifted up,
 /// so `.bak1` always holds the most recent previous version.
 /// Silently ignores errors — backup failure must never block writes.
-fn create_backup(path: &Path) {
+fn create_backup(path: &Path, registry: &BackupRegistry) {
     if !path.is_file() {
         return;
     }
@@ -48,7 +89,9 @@ fn create_backup(path: &Path) {
     for n in (1..BACKUP_COUNT).rev() {
         let _ = std::fs::rename(bak_path(n), bak_path(n + 1));
     }
-    let _ = std::fs::copy(path, bak_path(1));
+    if std::fs::copy(path, bak_path(1)).is_ok() {
+        registry.register(path);
+    }
 }
 
 /// Writes bytes to `path` using a temporary sibling file and rename.
@@ -113,7 +156,10 @@ pub trait StorageBackend {
 }
 
 /// JSON storage backend using `serde_json`.
-pub struct JsonBackend;
+pub struct JsonBackend {
+    backup: bool,
+    registry: Arc<BackupRegistry>,
+}
 
 impl StorageBackend for JsonBackend {
     fn read(&self, path: &Path) -> Result<Value> {
@@ -123,14 +169,19 @@ impl StorageBackend for JsonBackend {
     }
 
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
-        create_backup(path);
+        if self.backup {
+            create_backup(path, &self.registry);
+        }
         let bytes = serde_json::to_vec_pretty(value)?;
         write_file_safely(path, &bytes)
     }
 }
 
 /// YAML storage backend using `serde_yml`.
-pub struct YamlBackend;
+pub struct YamlBackend {
+    backup: bool,
+    registry: Arc<BackupRegistry>,
+}
 
 impl StorageBackend for YamlBackend {
     fn read(&self, path: &Path) -> Result<Value> {
@@ -144,7 +195,9 @@ impl StorageBackend for YamlBackend {
     }
 
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
-        create_backup(path);
+        if self.backup {
+            create_backup(path, &self.registry);
+        }
         // serde_json::Value implements Serialize, so serialize directly to YAML
         // without an intermediate serde_yml::Value allocation.
         let bytes = serde_yml::to_string(value).map_err(|e| Error::Storage(e.to_string()))?;
@@ -160,7 +213,10 @@ impl StorageBackend for YamlBackend {
 /// NOTE: This format differs from the bincode-wrapped format used before v0.2.3.
 /// Existing unencrypted binary files written by earlier versions must be
 /// re-created after upgrading.
-pub struct BinaryBackend;
+pub struct BinaryBackend {
+    backup: bool,
+    registry: Arc<BackupRegistry>,
+}
 
 impl StorageBackend for BinaryBackend {
     fn read(&self, path: &Path) -> Result<Value> {
@@ -171,7 +227,9 @@ impl StorageBackend for BinaryBackend {
     }
 
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
-        create_backup(path);
+        if self.backup {
+            create_backup(path, &self.registry);
+        }
         let bytes = serde_json::to_vec(value)?;
         write_file_safely(path, &bytes)
     }
@@ -188,17 +246,21 @@ impl StorageBackend for BinaryBackend {
 pub struct BinaryEncryptedBackend {
     /// Derived 32-byte cipher key, zeroed on drop via `Zeroizing`.
     key: Zeroizing<[u8; 32]>,
+    backup: bool,
+    registry: Arc<BackupRegistry>,
 }
 
 impl BinaryEncryptedBackend {
     /// Creates a new backend deriving the cipher key via `SHA-256(key_str)`.
-    pub fn new(key_str: &str) -> Self {
+    pub fn new(key_str: &str, backup: bool, registry: Arc<BackupRegistry>) -> Self {
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(key_str.as_bytes());
         let mut key = [0u8; 32];
         key.copy_from_slice(&hash);
         Self {
             key: Zeroizing::new(key),
+            backup,
+            registry,
         }
     }
 }
@@ -229,7 +291,9 @@ impl StorageBackend for BinaryEncryptedBackend {
     }
 
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
-        create_backup(path);
+        if self.backup {
+            create_backup(path, &self.registry);
+        }
         use chacha20poly1305::aead::{Aead, KeyInit};
         use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 
@@ -264,12 +328,16 @@ impl StorageBackend for BinaryEncryptedBackend {
 pub struct BinaryArgon2Backend {
     /// Raw password string, zeroed on drop via `Zeroizing`.
     password: Zeroizing<String>,
+    backup: bool,
+    registry: Arc<BackupRegistry>,
 }
 
 impl BinaryArgon2Backend {
-    pub fn new(password: &str) -> Self {
+    pub fn new(password: &str, backup: bool, registry: Arc<BackupRegistry>) -> Self {
         Self {
             password: Zeroizing::new(password.to_string()),
+            backup,
+            registry,
         }
     }
 
@@ -318,7 +386,9 @@ impl StorageBackend for BinaryArgon2Backend {
         use chacha20poly1305::aead::{Aead, KeyInit};
         use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 
-        create_backup(path);
+        if self.backup {
+            create_backup(path, &self.registry);
+        }
         let json_bytes = serde_json::to_vec(value)?;
 
         let mut salt = [0u8; 16];
@@ -409,7 +479,10 @@ fn json_to_toml_value(value: &Value) -> Result<toml::Value> {
 /// Reads and writes configs in TOML format.  TOML has no null type so `null`
 /// JSON values are silently omitted on write and will be absent on the next
 /// read.  Use `optional()` schema fields to express nullable config values.
-pub struct TomlBackend;
+pub struct TomlBackend {
+    backup: bool,
+    registry: Arc<BackupRegistry>,
+}
 
 impl StorageBackend for TomlBackend {
     fn read(&self, path: &Path) -> Result<Value> {
@@ -424,7 +497,9 @@ impl StorageBackend for TomlBackend {
     }
 
     fn write(&self, path: &Path, value: &Value) -> Result<()> {
-        create_backup(path);
+        if self.backup {
+            create_backup(path, &self.registry);
+        }
         let toml_val = json_to_toml_value(value)?;
         if !matches!(toml_val, toml::Value::Table(_)) {
             return Err(Error::Storage(
@@ -438,21 +513,25 @@ impl StorageBackend for TomlBackend {
 }
 
 /// Returns a boxed file backend for the given normalized provider.
-pub fn file_backend_for(provider: &NormalizedProvider) -> Result<Box<dyn StorageBackend>> {
+pub fn file_backend_for(
+    provider: &NormalizedProvider,
+    backup: bool,
+    registry: Arc<BackupRegistry>,
+) -> Result<Box<dyn StorageBackend>> {
     use crate::models::KeyDerivation;
     match provider {
-        NormalizedProvider::Json => Ok(Box::new(JsonBackend)),
-        NormalizedProvider::Yml => Ok(Box::new(YamlBackend)),
-        NormalizedProvider::Toml => Ok(Box::new(TomlBackend)),
+        NormalizedProvider::Json => Ok(Box::new(JsonBackend { backup, registry })),
+        NormalizedProvider::Yml => Ok(Box::new(YamlBackend { backup, registry })),
+        NormalizedProvider::Toml => Ok(Box::new(TomlBackend { backup, registry })),
         NormalizedProvider::Binary {
             encryption_key,
             kdf,
         } => match encryption_key.as_deref() {
             Some(key) => match kdf {
-                KeyDerivation::Argon2 => Ok(Box::new(BinaryArgon2Backend::new(key))),
-                KeyDerivation::Sha256 => Ok(Box::new(BinaryEncryptedBackend::new(key))),
+                KeyDerivation::Argon2 => Ok(Box::new(BinaryArgon2Backend::new(key, backup, registry))),
+                KeyDerivation::Sha256 => Ok(Box::new(BinaryEncryptedBackend::new(key, backup, registry))),
             },
-            None => Ok(Box::new(BinaryBackend)),
+            None => Ok(Box::new(BinaryBackend { backup, registry })),
         },
         NormalizedProvider::Sqlite { .. } => Err(Error::InvalidPayload(
             "sqlite provider must be handled by sqlite read/write APIs".to_string(),
@@ -931,11 +1010,15 @@ mod tests {
         dir.path().join(name)
     }
 
+    fn reg() -> Arc<BackupRegistry> {
+        Arc::new(BackupRegistry::new())
+    }
+
     #[test]
     fn json_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.json");
-        let backend = JsonBackend;
+        let backend = JsonBackend { backup: false, registry: reg() };
         let data = json!({"key": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -946,7 +1029,7 @@ mod tests {
     fn yaml_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.yaml");
-        let backend = YamlBackend;
+        let backend = YamlBackend { backup: false, registry: reg() };
         let data = json!({"key": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -957,7 +1040,7 @@ mod tests {
     fn toml_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.toml");
-        let backend = TomlBackend;
+        let backend = TomlBackend { backup: false, registry: reg() };
         let data = json!({
             "key": "value",
             "nested": {"enabled": true},
@@ -972,7 +1055,7 @@ mod tests {
     fn toml_array_null_is_rejected() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test-null.toml");
-        let backend = TomlBackend;
+        let backend = TomlBackend { backup: false, registry: reg() };
         let data = json!({"items": [1, null, 2]});
 
         let err = backend.write(&path, &data).unwrap_err();
@@ -986,7 +1069,7 @@ mod tests {
     fn binary_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.bin");
-        let backend = BinaryBackend;
+        let backend = BinaryBackend { backup: false, registry: reg() };
         let data = json!({"key": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -997,7 +1080,7 @@ mod tests {
     fn encrypted_binary_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.binc");
-        let backend = BinaryEncryptedBackend::new("my-test-key");
+        let backend = BinaryEncryptedBackend::new("my-test-key", false, reg());
         let data = json!({"secret": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -1083,7 +1166,7 @@ mod tests {
     fn argon2_encrypted_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.argon2.bin");
-        let backend = BinaryArgon2Backend::new("my-strong-password");
+        let backend = BinaryArgon2Backend::new("my-strong-password", false, reg());
         let data = json!({"secret": "argon2-protected", "count": 99});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -1094,11 +1177,11 @@ mod tests {
     fn argon2_wrong_key_fails() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.argon2-bad.bin");
-        let backend = BinaryArgon2Backend::new("correct-password");
+        let backend = BinaryArgon2Backend::new("correct-password", false, reg());
         let data = json!({"secret": "value"});
         backend.write(&path, &data).unwrap();
 
-        let wrong_backend = BinaryArgon2Backend::new("wrong-password");
+        let wrong_backend = BinaryArgon2Backend::new("wrong-password", false, reg());
         assert!(wrong_backend.read(&path).is_err());
     }
 
@@ -1106,7 +1189,7 @@ mod tests {
     fn backup_is_created_on_write() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.json");
-        let backend = JsonBackend;
+        let backend = JsonBackend { backup: true, registry: reg() };
 
         let data1 = json!({"version": 1});
         backend.write(&path, &data1).unwrap();
@@ -1150,11 +1233,11 @@ mod tests {
     fn encrypted_wrong_key_fails() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test-enc-bad.bin");
-        let backend = BinaryEncryptedBackend::new("correct-key");
+        let backend = BinaryEncryptedBackend::new("correct-key", false, reg());
         let data = json!({"secret": "value"});
         backend.write(&path, &data).unwrap();
 
-        let wrong_backend = BinaryEncryptedBackend::new("wrong-key");
+        let wrong_backend = BinaryEncryptedBackend::new("wrong-key", false, reg());
         assert!(wrong_backend.read(&path).is_err());
     }
 
@@ -1178,7 +1261,7 @@ mod tests {
     fn backup_rotation_keeps_three_slots() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.json");
-        let backend = JsonBackend;
+        let backend = JsonBackend { backup: true, registry: reg() };
 
         // Write v1, v2, v3, v4 — only the last 3 should remain as backups.
         backend.write(&path, &json!({"v": 1})).unwrap();

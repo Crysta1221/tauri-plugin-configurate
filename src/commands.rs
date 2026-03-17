@@ -296,7 +296,11 @@ fn load_plain_data<R: Runtime>(
             )
         }
         _ => {
-            let backend = storage::file_backend_for(&payload.provider)?;
+            let backend = storage::file_backend_for(
+                &payload.provider,
+                false,
+                Arc::new(storage::BackupRegistry::new()),
+            )?;
             let path = resolve_file_path(app, payload)?;
             backend.read(&path)
         }
@@ -320,7 +324,11 @@ fn save_plain_data<R: Runtime>(
             )
         }
         _ => {
-            let backend = storage::file_backend_for(&payload.provider)?;
+            let registry = app
+                .try_state::<Arc<storage::BackupRegistry>>()
+                .map(|s| Arc::clone(s.inner()))
+                .unwrap_or_else(|| Arc::new(storage::BackupRegistry::new()));
+            let backend = storage::file_backend_for(&payload.provider, payload.backup, registry)?;
             let path = resolve_file_path(app, payload)?;
             backend.write(&path, data)
         }

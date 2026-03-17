@@ -73,6 +73,12 @@ export interface ConfigurateInit<S extends SchemaObject> {
   version?: number;
   /** Ordered list of migration steps to apply when loading older configs. */
   migrations?: MigrationStep<InferUnlocked<S> & Record<string, unknown>>[];
+  /**
+   * When true, rolling backup files (`.bak1`–`.bak3`) are created before each
+   * write and deleted automatically when the application exits.
+   * Defaults to false.
+   */
+  backup?: boolean;
 }
 
 interface ResolvedSchemaValidationOptions {
@@ -91,6 +97,7 @@ interface NormalizedConfigurateInit<S extends SchemaObject> {
   defaults?: Partial<InferUnlocked<S>>;
   version?: number;
   migrations?: MigrationStep<InferUnlocked<S> & Record<string, unknown>>[];
+  backup: boolean;
 }
 
 function resolveValidationOptions(
@@ -164,6 +171,7 @@ function normalizeConfigurateInit<S extends SchemaObject>(
     defaults: input.defaults,
     version: input.version,
     migrations: input.migrations,
+    backup: input.backup ?? false,
   };
 }
 
@@ -748,6 +756,9 @@ export class Configurate<S extends SchemaObject> {
         dirName: this._opts.options.dirName,
         currentPath: this._opts.options.currentPath,
       };
+    }
+    if (this._opts.backup) {
+      base.backup = true;
     }
     return base;
   }

@@ -110,6 +110,10 @@ pub struct ConfiguratePayload {
     /// not yet exist instead of returning an error.
     #[serde(default)]
     pub create_if_missing: bool,
+    /// When true, rolling backup files are created before each write.
+    /// Defaults to false (opt-in).
+    #[serde(default)]
+    pub backup: bool,
 }
 
 /// Key derivation function used by the Binary provider.
@@ -179,6 +183,8 @@ pub struct NormalizedConfiguratePayload {
     pub return_data: bool,
     /// When true, `patch` creates the config if it does not exist.
     pub create_if_missing: bool,
+    /// When true, rolling backup files are created before each write.
+    pub backup: bool,
 }
 
 impl ConfiguratePayload {
@@ -267,6 +273,7 @@ impl ConfiguratePayload {
             with_unlock: self.with_unlock,
             return_data: self.return_data.unwrap_or(true),
             create_if_missing: self.create_if_missing,
+            backup: self.backup,
         })
     }
 }
@@ -344,6 +351,7 @@ mod tests {
             with_unlock: false,
             return_data: None,
             create_if_missing: false,
+            backup: false,
         }
     }
 

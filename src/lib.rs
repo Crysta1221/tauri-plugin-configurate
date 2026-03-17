@@ -66,9 +66,17 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             let configurate = desktop::init(app, api)?;
             app.manage(configurate);
             app.manage(locker::FileLockRegistry::new());
+            app.manage(std::sync::Arc::new(storage::BackupRegistry::new()));
             let watcher_state = watcher::WatcherState::new(app.clone())?;
             app.manage(watcher_state);
             Ok(())
+        })
+        .on_event(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(registry) = app.try_state::<std::sync::Arc<storage::BackupRegistry>>() {
+                    registry.cleanup_all();
+                }
+            }
         })
         .build()
 }
