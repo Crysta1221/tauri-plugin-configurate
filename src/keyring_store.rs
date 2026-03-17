@@ -53,6 +53,19 @@ pub fn get(opts: &KeyringOptions, id: &str) -> Result<String> {
     Ok(password)
 }
 
+/// Like `get`, but returns `Ok(None)` when the entry does not exist instead of an error.
+/// Used for optional keyring fields.
+pub fn get_optional(opts: &KeyringOptions, id: &str) -> Result<Option<String>> {
+    validate_id(id)?;
+    let user = build_user(opts, id);
+    let entry = keyring::Entry::new(&opts.service, &user)?;
+    match entry.get_password() {
+        Ok(pwd) => Ok(Some(pwd)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Deletes the entry from the OS keyring.
 /// Returns `Ok(())` even when the entry does not exist.
 pub fn delete(opts: &KeyringOptions, id: &str) -> Result<()> {

@@ -1,5 +1,16 @@
 const COMMANDS: &[&str] = &[
-    "create", "load", "save", "delete", "load_all", "save_all", "unlock",
+    "create",
+    "load",
+    "save",
+    "patch",
+    "delete",
+    "exists",
+    "load_all",
+    "save_all",
+    "patch_all",
+    "unlock",
+    "watch_file",
+    "unwatch_file",
 ];
 
 fn main() {

@@ -2,12 +2,11 @@
 
 **Tauri v2 plugin for type-safe application configuration management with OS keyring support.**
 
-Store app settings as JSON, YAML, Binary, or SQLite — with sensitive values automatically secured in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service).
+Store app settings as JSON, YAML, TOML, Binary, or SQLite — with sensitive values automatically secured in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service).
 
 ---
 
-> [!WARNING]
-> **Pre-release software (0.x)**
+> [!WARNING] **Pre-release software (0.x)**
 >
 > This plugin is under active development and has **not reached a stable 1.0 release**.
 >
@@ -21,14 +20,18 @@ Store app settings as JSON, YAML, Binary, or SQLite — with sensitive values au
 
 ## Features
 
-| Feature                       | Description                                                                                      |
-| ----------------------------- | ------------------------------------------------------------------------------------------------ |
-| 🛡️ **Type-safe schema**       | Define your config shape with `defineConfig()` — TypeScript infers all value types automatically |
-| 🔑 **OS keyring integration** | Mark sensitive fields with `keyring()` — secrets never touch disk                                |
-| 🧩 **Multiple providers**     | Choose JSON, YAML, Binary (encrypted or plain), or SQLite as the storage backend                 |
-| 📄 **Single-file API**        | `create` / `load` / `save` / `delete` / `unlock` — consistent builder-style calls                |
-| 📦 **Batch API**              | `loadAll` / `saveAll` — load or save multiple configs in a single IPC round-trip                 |
-| 🗂️ **Flexible paths**         | Control the storage location with `baseDir`, `options.dirName`, and `options.currentPath`        |
+| Feature | Description |
+| --- | --- |
+| 🛡️ **Type-safe schema** | Define your config shape with `defineConfig()` — TypeScript infers all value types automatically |
+| 🔑 **OS keyring integration** | Mark sensitive fields with `keyring()` — secrets never touch disk |
+| 🧩 **Multiple providers** | Choose JSON, YAML, TOML, Binary (encrypted or plain), or SQLite as the storage backend |
+| 📄 **Single-file API** | `create` / `load` / `save` / `patch` / `delete` / `exists` / `reset` — consistent builder-style calls |
+| 📦 **Batch API** | `loadAll` / `saveAll` / `patchAll` — load, save, or patch multiple configs in a single IPC round-trip |
+| 🗂️ **Flexible paths** | Control the storage location with `baseDir`, `options.dirName`, and `options.currentPath` |
+| 👁️ **File watching** | `watchExternal` / `onChange` — react to changes from external processes or in-app operations |
+| 📤 **Export / Import** | `exportAs` / `importFrom` — convert configs between JSON, YAML, and TOML formats |
+| 🔄 **Config Diff** | `configDiff()` — compute structural differences between two config objects |
+| ✅ **Dry-run validation** | `validate()` / `validatePartial()` — check data against schema without writing to storage |
 
 ---
 
@@ -56,7 +59,17 @@ pub fn run() {
 **or, use tauri cli.**
 
 ```sh
-tauri add configurate
+# npm
+npm tauri add configurate
+
+# pnpm
+pnpm tauri add configurate
+
+# yarn
+yarn tauri add configurate
+
+# bun
+bun tauri add configurate
 ```
 
 ### 2. Add the JavaScript / TypeScript API
@@ -89,15 +102,24 @@ Add the following to your capability file (e.g. `src-tauri/capabilities/default.
 
 `configurate:default` expands to:
 
-| Permission                   | Operation                  |
-| ---------------------------- | -------------------------- |
-| `configurate:allow-create`   | Create a new config file   |
-| `configurate:allow-load`     | Read a config file         |
-| `configurate:allow-save`     | Write/update a config file |
-| `configurate:allow-delete`   | Delete a config file       |
-| `configurate:allow-load-all` | Batch load                 |
-| `configurate:allow-save-all` | Batch save                 |
-| `configurate:allow-unlock`   | Inline keyring decryption  |
+| Permission | Operation |
+| --- | --- |
+| `configurate:allow-create` | Create a new config file |
+| `configurate:allow-load` | Read a config file |
+| `configurate:allow-save` | Write/update a config file |
+| `configurate:allow-patch` | Partially update a config file |
+| `configurate:allow-delete` | Delete a config file |
+| `configurate:allow-exists` | Check if a config exists |
+| `configurate:allow-load-all` | Batch load |
+| `configurate:allow-save-all` | Batch save |
+| `configurate:allow-patch-all` | Batch patch |
+| `configurate:allow-unlock` | Inline keyring decryption |
+| `configurate:allow-watch-file` | Watch a config file for external changes |
+| `configurate:allow-unwatch-file` | Stop watching a config file |
+| `configurate:allow-list-configs` | List config files in the storage directory |
+| `configurate:allow-reset` | Reset a config to default values |
+| `configurate:allow-export-config` | Export config data to a string |
+| `configurate:allow-import-config` | Import config data from a string |
 
 ---
 
@@ -106,11 +128,12 @@ Add the following to your capability file (e.g. `src-tauri/capabilities/default.
 ### Step 1 — Define your schema
 
 ```ts
-import { defineConfig, keyring } from "tauri-plugin-configurate-api";
+import { defineConfig, keyring, optional } from "tauri-plugin-configurate-api";
 
 const appSchema = defineConfig({
   theme: String,
   language: String,
+  fontSize: optional(Number),
   database: {
     host: String,
     // "password" is stored in the OS keyring, never written to disk
@@ -121,7 +144,7 @@ const appSchema = defineConfig({
 
 `defineConfig()` validates at runtime that all `keyring()` IDs are unique within the schema.
 
-You can also define array schemas with a single element descriptor:
+Array schemas are also supported:
 
 ```ts
 const schema = defineConfig({
@@ -130,38 +153,28 @@ const schema = defineConfig({
     {
       time: String,
       token: keyring(String, { id: "timetable-token" }),
-      xxx: String,
-      loc_by: {
-        bus: {
-          mix: Number,
-          min: Number,
-        },
-        bike: {
-          mix: Number,
-          min: Number,
-        },
-      },
     },
   ],
 });
 ```
 
-Array elements with `keyring()` are supported. The plugin stores each element with
-an index-aware keyring id under the hood.
-
 ### Step 2 — Create a `Configurate` instance
 
 ```ts
-import { BaseDirectory, Configurate, JsonProvider } from "tauri-plugin-configurate-api";
+import {
+  BaseDirectory,
+  Configurate,
+  JsonProvider,
+} from "tauri-plugin-configurate-api";
 
 const config = new Configurate({
   schema: appSchema,
-  fileName: "app.json", // filename only, no path separators
+  fileName: "app.json",
   baseDir: BaseDirectory.AppConfig,
   provider: JsonProvider(),
   options: {
-    dirName: "my-app", // replaces the app identifier segment
-    currentPath: "config/v2", // sub-directory within the root
+    dirName: "my-app",
+    currentPath: "config/v2",
   },
 });
 ```
@@ -173,14 +186,14 @@ The resolved path is: `{AppConfig}/my-app/config/v2/app.json`
 ```ts
 const KEYRING = { service: "my-app", account: "default" };
 
-// Create — writes plain fields to disk, stores secrets in the OS keyring
+// Create
 await config
   .create({
     theme: "dark",
     language: "ja",
     database: { host: "localhost", password: "secret" },
   })
-  .lock(KEYRING) // KEYRING opts are required when the schema has keyring fields
+  .lock(KEYRING)
   .run();
 
 // Load (locked) — keyring fields come back as null
@@ -191,7 +204,7 @@ console.log(locked.data.database.password); // null
 const unlocked = await config.load().unlock(KEYRING);
 console.log(unlocked.data.database.password); // "secret"
 
-// Save — same pattern as create
+// Save
 await config
   .save({
     theme: "light",
@@ -200,6 +213,12 @@ await config
   })
   .lock(KEYRING)
   .run();
+
+// Patch — partially update without replacing the full config
+await config.patch({ theme: "dark" }).run();
+
+// Exists
+const present = await config.exists();
 
 // Delete — removes the file and wipes keyring entries
 await config.delete(KEYRING);
@@ -215,53 +234,29 @@ Choose the storage format when constructing a `Configurate` instance.
 import {
   JsonProvider,
   YmlProvider,
+  TomlProvider,
   BinaryProvider,
   SqliteProvider,
-} from "tauri-plugin-configurate-api/provider";
+} from "tauri-plugin-configurate-api";
 
-// Plain JSON (human-readable)
-JsonProvider();
-
-// YAML
-YmlProvider();
-
-// Encrypted binary using XChaCha20-Poly1305
-// The key is hashed via SHA-256 internally — use a high-entropy string
-BinaryProvider({ encryptionKey: "high-entropy-key" });
-
-// Unencrypted binary (compact JSON bytes, no human-readable format)
-BinaryProvider();
-
-// SQLite — all schema fields become typed columns
-SqliteProvider({ dbName: "app.db", tableName: "configs" });
+JsonProvider(); // Plain JSON
+YmlProvider(); // YAML
+TomlProvider(); // TOML
+BinaryProvider({ encryptionKey: "key" }); // Encrypted binary (XChaCha20-Poly1305)
+BinaryProvider({ encryptionKey: "key", kdf: "argon2" }); // Encrypted binary with Argon2id KDF
+BinaryProvider(); // Unencrypted binary
+SqliteProvider({ dbName: "app.db", tableName: "configs" }); // SQLite
 ```
 
-> [!NOTE]
-> `BinaryProvider()` without an `encryptionKey` provides **no confidentiality**.
-> Use `BinaryProvider({ encryptionKey })` or the OS keyring for sensitive values.
+> [!NOTE] `BinaryProvider()` without an `encryptionKey` provides **no confidentiality**. Use `BinaryProvider({ encryptionKey })` or the OS keyring for sensitive values.
 
 ---
 
 ## Batch Operations
 
-Load or save multiple configs in a **single IPC call** with `loadAll` / `saveAll`.
+Load, save, or patch multiple configs in a **single IPC call**.
 
 ```ts
-const appConfig = new Configurate({
-  schema: defineConfig({ theme: String }),
-  fileName: "app.json",
-  baseDir: BaseDirectory.AppConfig,
-  provider: JsonProvider(),
-});
-
-const secretConfig = new Configurate({
-  schema: defineConfig({ token: keyring(String, { id: "api-token" }) }),
-  fileName: "secret.bin",
-  baseDir: BaseDirectory.AppConfig,
-  provider: BinaryProvider({ encryptionKey: "high-entropy-key" }),
-});
-
-// Load all — unlock a specific entry by id
 const loaded = await Configurate.loadAll([
   { id: "app", config: appConfig },
   { id: "secret", config: secretConfig },
@@ -269,43 +264,121 @@ const loaded = await Configurate.loadAll([
   .unlock("secret", { service: "my-app", account: "default" })
   .run();
 
-// Save all — lock a specific entry by id
 const saved = await Configurate.saveAll([
   { id: "app", config: appConfig, data: { theme: "dark" } },
   { id: "secret", config: secretConfig, data: { token: "next-token" } },
 ])
   .lock("secret", { service: "my-app", account: "default" })
   .run();
-```
 
-### Result shape
+const patched = await Configurate.patchAll([
+  { id: "app", config: appConfig, data: { theme: "light" } },
+]).run();
+```
 
 Each entry in `results` is either a success or a per-entry failure — a single entry failing **does not abort the batch**.
 
-```ts
-type BatchRunResult = {
-  results: {
-    [id: string]:
-      | { ok: true; data: unknown }
-      | { ok: false; error: { kind: string; message: string } };
-  };
-};
+---
 
-// Access individual results
-loaded.results.app; // { ok: true, data: { theme: "dark" } }
-loaded.results.secret; // { ok: true, data: { token: "..." } }
+## File Watching
+
+### External changes (from other processes)
+
+```ts
+const stopWatching = await config.watchExternal((event) => {
+  console.log(`File changed externally: ${event.fileName}`);
+});
+
+// Later, stop watching
+await stopWatching();
+```
+
+### In-app changes
+
+```ts
+const unlisten = await config.onChange((event) => {
+  console.log(`Config ${event.operation}: ${event.fileName}`);
+});
+
+// Later, stop listening
+unlisten();
+```
+
+---
+
+## Additional Features
+
+### List configs
+
+```ts
+const files = await config.list();
+// ["app.json", "user.json", ...]
+```
+
+### Reset to defaults
+
+```ts
+await config
+  .reset({
+    theme: "dark",
+    language: "en",
+    database: { host: "localhost", password: "secret" },
+  })
+  .lock(KEYRING)
+  .run();
+```
+
+### Export / Import
+
+```ts
+// Export to YAML string
+const yamlString = await config.exportAs("yml");
+
+// Import from TOML string
+await config.importFrom(tomlString, "toml", KEYRING);
+```
+
+For schemas with `keyring()` fields, pass `KEYRING` to `exportAs()` if you want
+the exported string to include decrypted secret values, and pass it to
+`importFrom()` so imported secrets are stored back into the OS keyring instead
+of being written to disk.
+
+### Dry-run validation
+
+```ts
+try {
+  config.validate(data); // full validation
+  config.validatePartial(patch); // partial validation
+} catch (e) {
+  console.error("Validation failed:", e.message);
+}
+```
+
+### Config diff
+
+```ts
+import { configDiff } from "tauri-plugin-configurate-api";
+
+const changes = configDiff(
+  { theme: "light", fontSize: 14 },
+  { theme: "dark", fontSize: 14, lang: "en" },
+);
+// [
+//   { path: "theme", type: "changed", oldValue: "light", newValue: "dark" },
+//   { path: "lang", type: "added", newValue: "en" },
+// ]
 ```
 
 ---
 
 ## Path Resolution
 
-| Option                | Effect                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `baseDir`             | Tauri `BaseDirectory` enum value (e.g. `AppConfig`, `AppData`, `Desktop`)                                                |
-| `options.dirName`     | Replaces the app-identifier segment when it is the last segment of `baseDir` path; otherwise appended as a sub-directory |
-| `options.currentPath` | Sub-directory appended after the `dirName` root                                                                          |
-| `fileName`            | Single filename — **must not contain path separators**                                                                   |
+| Option | Effect |
+| --- | --- |
+| `baseDir` | Tauri `BaseDirectory` enum value (e.g. `AppConfig`, `AppData`, `Desktop`) |
+| `options.dirName` | Replaces the app-identifier segment when it is the last segment of `baseDir` path; otherwise appended as a sub-directory |
+| `options.currentPath` | Sub-directory appended after the `dirName` root |
+| `fileName` | Single filename — **must not contain path separators** |
 
 Example — `baseDir: AppConfig`, `dirName: "my-app"`, `currentPath: "v2"`, `fileName: "settings.json"`:
 
@@ -317,20 +390,9 @@ Linux:    ~/.config/my-app/v2/settings.json
 
 ---
 
-## Compatibility
+## API Reference
 
-The following **deprecated** forms are still accepted in the current minor version and automatically normalized to the new API. Each emits one `console.warn` per process.
-
-| Deprecated form                 | Replacement                                                      |
-| ------------------------------- | ---------------------------------------------------------------- |
-| `new Configurate(schema, opts)` | `new Configurate({ schema, ...opts })`                           |
-| `ConfigurateFactory`            | `new Configurate({ ... })`                                       |
-| `dir`                           | `baseDir`                                                        |
-| `name`                          | `fileName`                                                       |
-| `path`                          | `options.currentPath`                                            |
-| `format` + `encryptionKey`      | `provider: JsonProvider()` / `BinaryProvider({ encryptionKey })` |
-
-> These compatibility shims will be **removed in the next minor release**.
+See [commands.md](./commands.md) for the complete TypeScript API reference.
 
 ---
 

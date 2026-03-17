@@ -7,16 +7,6 @@ use crate::error::{Error, Result};
 pub const DEFAULT_SQLITE_DB_NAME: &str = "configurate.db";
 pub const DEFAULT_SQLITE_TABLE_NAME: &str = "configurate_configs";
 
-/// Supported storage file formats (legacy input compatibility).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum StorageFormat {
-    Json,
-    #[serde(alias = "yml")]
-    Yaml,
-    Binary,
-}
-
 /// Supported provider kinds for the normalized runtime model.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -25,6 +15,7 @@ pub enum ProviderKind {
     Yml,
     Binary,
     Sqlite,
+    Toml,
 }
 
 /// Provider payload sent from the guest side.
@@ -33,6 +24,7 @@ pub enum ProviderKind {
 pub struct ProviderPayload {
     pub kind: ProviderKind,
     pub encryption_key: Option<String>,
+    pub kdf: Option<KeyDerivation>,
     pub db_name: Option<String>,
     pub table_name: Option<String>,
 }
@@ -54,6 +46,9 @@ pub struct KeyringEntry {
     pub dotpath: String,
     /// Plaintext value to store in the OS keyring.
     pub value: String,
+    /// When true, a "not found" keyring error on read is treated as absent (null) rather than an error.
+    #[serde(default)]
+    pub is_optional: bool,
 }
 
 /// Options required to access the OS keyring.
@@ -89,13 +84,9 @@ pub struct SqliteColumn {
 }
 
 /// Unified payload sent from TypeScript side for create/load/save/delete.
-///
-/// This struct intentionally keeps both new and legacy fields so one minor
-/// version can accept old callers while normalizing into one internal model.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfiguratePayload {
-    // New API
     pub file_name: Option<String>,
     pub base_dir: Option<BaseDirectory>,
     pub options: Option<PathOptions>,
@@ -103,23 +94,29 @@ pub struct ConfiguratePayload {
     #[serde(default)]
     pub schema_columns: Vec<SqliteColumn>,
 
-    // Legacy API
-    pub name: Option<String>,
-    pub dir: Option<BaseDirectory>,
-    pub dir_name: Option<String>,
-    pub path: Option<String>,
-    pub format: Option<StorageFormat>,
-    pub encryption_key: Option<String>,
-
     // Common fields
     pub data: Option<serde_json::Value>,
     pub keyring_entries: Option<Vec<KeyringEntry>>,
     pub keyring_options: Option<KeyringOptions>,
     #[serde(default)]
+    pub keyring_delete_ids: Vec<String>,
+    #[serde(default)]
     pub with_unlock: bool,
     /// Whether create/save should return the resulting config data.
     /// Defaults to true for backward compatibility.
     pub return_data: Option<bool>,
+    /// When true, `patch` creates the config with the patch data if it does
+    /// not yet exist instead of returning an error.
+    #[serde(default)]
+    pub create_if_missing: bool,
+}
+
+/// Key derivation function used by the Binary provider.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyDerivation {
+    Sha256,
+    Argon2,
 }
 
 /// Normalized provider used internally after payload normalization.
@@ -127,12 +124,41 @@ pub struct ConfiguratePayload {
 /// Each variant carries only the fields that are meaningful for that provider,
 /// eliminating the spurious `db_name`/`table_name` on non-SQLite providers and
 /// the spurious `encryption_key` on non-Binary providers.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum NormalizedProvider {
     Json,
     Yml,
-    Binary { encryption_key: Option<String> },
+    Toml,
+    Binary {
+        encryption_key: Option<String>,
+        kdf: KeyDerivation,
+    },
     Sqlite { db_name: String, table_name: String },
+}
+
+/// Custom Debug impl that redacts the `encryption_key` so it is never
+/// accidentally printed in log output, panic messages, or test failures.
+impl std::fmt::Debug for NormalizedProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json => write!(f, "Json"),
+            Self::Yml => write!(f, "Yml"),
+            Self::Toml => write!(f, "Toml"),
+            Self::Binary { encryption_key, kdf } => f
+                .debug_struct("Binary")
+                .field(
+                    "encryption_key",
+                    &encryption_key.as_ref().map(|_| "[REDACTED]"),
+                )
+                .field("kdf", kdf)
+                .finish(),
+            Self::Sqlite { db_name, table_name } => f
+                .debug_struct("Sqlite")
+                .field("db_name", db_name)
+                .field("table_name", table_name)
+                .finish(),
+        }
+    }
 }
 
 /// Normalized payload used internally across all commands.
@@ -147,78 +173,62 @@ pub struct NormalizedConfiguratePayload {
     pub data: Option<serde_json::Value>,
     pub keyring_entries: Option<Vec<KeyringEntry>>,
     pub keyring_options: Option<KeyringOptions>,
+    pub keyring_delete_ids: Vec<String>,
     pub with_unlock: bool,
     pub return_data: bool,
+    /// When true, `patch` creates the config if it does not exist.
+    pub create_if_missing: bool,
 }
 
 impl ConfiguratePayload {
     pub fn normalize(self) -> Result<NormalizedConfiguratePayload> {
         let file_name = self
             .file_name
-            .or(self.name)
-            .ok_or_else(|| Error::InvalidPayload("missing fileName/name".to_string()))?;
+            .ok_or_else(|| Error::InvalidPayload("missing fileName".to_string()))?;
 
         let base_dir = self
             .base_dir
-            .or(self.dir)
-            .ok_or_else(|| Error::InvalidPayload("missing baseDir/dir".to_string()))?;
+            .ok_or_else(|| Error::InvalidPayload("missing baseDir".to_string()))?;
 
         let (dir_name, current_path) = match self.options {
             Some(opts) => (opts.dir_name, opts.current_path),
-            None => (self.dir_name, self.path),
+            None => (None, None),
         };
 
-        let provider = match self.provider {
-            Some(provider) => {
-                // Validate early: encryptionKey is only meaningful for Binary.
-                // Previously this check was at the bottom as dead code for this branch
-                // because encryption_key was already set to None before the check.
-                let is_binary_provider = matches!(&provider.kind, ProviderKind::Binary);
-                if !is_binary_provider
-                    && (provider.encryption_key.is_some() || self.encryption_key.is_some())
-                {
-                    return Err(Error::InvalidPayload(
-                        "encryptionKey is only supported with provider.kind='binary'".to_string(),
-                    ));
-                }
+        let provider_payload = self
+            .provider
+            .ok_or_else(|| Error::InvalidPayload("missing provider".to_string()))?;
 
-                match provider.kind {
-                    ProviderKind::Json => NormalizedProvider::Json,
-                    ProviderKind::Yml => NormalizedProvider::Yml,
-                    ProviderKind::Binary => NormalizedProvider::Binary {
-                        encryption_key: provider.encryption_key.or(self.encryption_key),
-                    },
-                    ProviderKind::Sqlite => NormalizedProvider::Sqlite {
-                        db_name: provider
-                            .db_name
-                            .unwrap_or_else(|| DEFAULT_SQLITE_DB_NAME.to_string()),
-                        table_name: provider
-                            .table_name
-                            .unwrap_or_else(|| DEFAULT_SQLITE_TABLE_NAME.to_string()),
-                    },
-                }
-            }
-            None => {
-                // Legacy API path: `format` + optional `encryptionKey`.
-                let format = self
-                    .format
-                    .ok_or_else(|| Error::InvalidPayload("missing provider/format".to_string()))?;
+        if !self.keyring_delete_ids.is_empty() && self.keyring_options.is_none() {
+            return Err(Error::InvalidPayload(
+                "keyringDeleteIds provided without keyringOptions".to_string(),
+            ));
+        }
 
-                // Validate encryptionKey for the legacy path.
-                if !matches!(format, StorageFormat::Binary) && self.encryption_key.is_some() {
-                    return Err(Error::InvalidPayload(
-                        "encryptionKey is only supported with provider.kind='binary'".to_string(),
-                    ));
-                }
+        if !matches!(&provider_payload.kind, ProviderKind::Binary)
+            && provider_payload.encryption_key.is_some()
+        {
+            return Err(Error::InvalidPayload(
+                "encryptionKey is only supported with provider.kind='binary'".to_string(),
+            ));
+        }
 
-                match format {
-                    StorageFormat::Json => NormalizedProvider::Json,
-                    StorageFormat::Yaml => NormalizedProvider::Yml,
-                    StorageFormat::Binary => NormalizedProvider::Binary {
-                        encryption_key: self.encryption_key,
-                    },
-                }
-            }
+        let provider = match provider_payload.kind {
+            ProviderKind::Json => NormalizedProvider::Json,
+            ProviderKind::Yml => NormalizedProvider::Yml,
+            ProviderKind::Toml => NormalizedProvider::Toml,
+            ProviderKind::Binary => NormalizedProvider::Binary {
+                encryption_key: provider_payload.encryption_key,
+                kdf: provider_payload.kdf.unwrap_or(KeyDerivation::Sha256),
+            },
+            ProviderKind::Sqlite => NormalizedProvider::Sqlite {
+                db_name: provider_payload
+                    .db_name
+                    .unwrap_or_else(|| DEFAULT_SQLITE_DB_NAME.to_string()),
+                table_name: provider_payload
+                    .table_name
+                    .unwrap_or_else(|| DEFAULT_SQLITE_TABLE_NAME.to_string()),
+            },
         };
 
         let schema_columns = self.schema_columns;
@@ -244,8 +254,10 @@ impl ConfiguratePayload {
             data: self.data,
             keyring_entries: self.keyring_entries,
             keyring_options: self.keyring_options,
+            keyring_delete_ids: self.keyring_delete_ids,
             with_unlock: self.with_unlock,
             return_data: self.return_data.unwrap_or(true),
+            create_if_missing: self.create_if_missing,
         })
     }
 }
@@ -258,6 +270,9 @@ pub struct UnlockPayload {
     pub keyring_entries: Option<Vec<KeyringEntry>>,
     pub keyring_options: Option<KeyringOptions>,
 }
+
+/// Payload for the `patch` command (reuses `ConfiguratePayload`).
+pub type PatchPayload = ConfiguratePayload;
 
 /// Single entry used by `load_all` and `save_all`.
 #[derive(Debug, Deserialize)]
@@ -313,30 +328,26 @@ mod tests {
             options: None,
             provider: None,
             schema_columns: Vec::new(),
-            name: None,
-            dir: None,
-            dir_name: None,
-            path: None,
-            format: None,
-            encryption_key: None,
             data: None,
             keyring_entries: None,
             keyring_options: None,
+            keyring_delete_ids: Vec::new(),
             with_unlock: false,
             return_data: None,
+            create_if_missing: false,
         }
     }
 
     #[test]
-    fn normalize_rejects_legacy_encryption_key_with_non_binary_provider() {
+    fn normalize_rejects_encryption_key_with_non_binary_provider() {
         let mut payload = base_payload();
         payload.provider = Some(ProviderPayload {
             kind: ProviderKind::Json,
-            encryption_key: None,
+            encryption_key: Some("key".to_string()),
+            kdf: None,
             db_name: None,
             table_name: None,
         });
-        payload.encryption_key = Some("legacy-key".to_string());
 
         let err = payload.normalize().expect_err("expected invalid payload");
         match err {
@@ -351,22 +362,43 @@ mod tests {
     }
 
     #[test]
-    fn normalize_allows_legacy_encryption_key_with_binary_provider() {
+    fn normalize_allows_encryption_key_with_binary_provider() {
         let mut payload = base_payload();
         payload.provider = Some(ProviderPayload {
             kind: ProviderKind::Binary,
-            encryption_key: None,
+            encryption_key: Some("my-key".to_string()),
+            kdf: None,
             db_name: None,
             table_name: None,
         });
-        payload.encryption_key = Some("legacy-key".to_string());
 
         let normalized = payload.normalize().expect("expected valid payload");
         match normalized.provider {
-            NormalizedProvider::Binary { encryption_key } => {
-                assert_eq!(encryption_key.as_deref(), Some("legacy-key"));
+            NormalizedProvider::Binary { encryption_key, .. } => {
+                assert_eq!(encryption_key.as_deref(), Some("my-key"));
             }
             _ => panic!("unexpected provider variant"),
+        }
+    }
+
+    #[test]
+    fn normalize_rejects_keyring_delete_ids_without_keyring_options() {
+        let mut payload = base_payload();
+        payload.provider = Some(ProviderPayload {
+            kind: ProviderKind::Json,
+            encryption_key: None,
+            kdf: None,
+            db_name: None,
+            table_name: None,
+        });
+        payload.keyring_delete_ids = vec!["tok".to_string()];
+
+        let err = payload.normalize().expect_err("expected invalid payload");
+        match err {
+            Error::InvalidPayload(msg) => {
+                assert_eq!(msg, "keyringDeleteIds provided without keyringOptions");
+            }
+            _ => panic!("unexpected error variant"),
         }
     }
 }
