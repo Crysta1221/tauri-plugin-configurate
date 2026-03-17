@@ -11,6 +11,10 @@ const COMMANDS: &[&str] = &[
     "unlock",
     "watch_file",
     "unwatch_file",
+    "list_configs",
+    "reset",
+    "export_config",
+    "import_config",
 ];
 
 fn main() {

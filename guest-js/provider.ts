@@ -27,6 +27,18 @@ function createProvider(payload: ProviderPayload): ConfigurateProvider {
   return Object.freeze(provider) as ConfigurateProvider;
 }
 
+function isBinaryProvider(value: Record<string, unknown>): boolean {
+  if (value.encryptionKey !== undefined && typeof value.encryptionKey !== "string") return false;
+  if (value.kdf !== undefined && typeof value.kdf !== "string") return false;
+  return true;
+}
+
+function isSqliteProvider(value: Record<string, unknown>): boolean {
+  if (value.dbName !== undefined && typeof value.dbName !== "string") return false;
+  if (value.tableName !== undefined && typeof value.tableName !== "string") return false;
+  return true;
+}
+
 export function isProvider(input: unknown): input is ConfigurateProvider {
   if (typeof input !== "object" || input === null) {
     return false;
@@ -36,13 +48,18 @@ export function isProvider(input: unknown): input is ConfigurateProvider {
     return false;
   }
   const kind = value.kind;
-  return (
-    kind === "json" ||
-    kind === "yml" ||
-    kind === "toml" ||
-    kind === "binary" ||
-    kind === "sqlite"
-  );
+  switch (kind) {
+    case "json":
+    case "yml":
+    case "toml":
+      return true;
+    case "binary":
+      return isBinaryProvider(value);
+    case "sqlite":
+      return isSqliteProvider(value);
+    default:
+      return false;
+  }
 }
 
 export function JsonProvider(): ConfigurateProvider {

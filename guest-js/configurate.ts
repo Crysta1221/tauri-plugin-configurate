@@ -948,7 +948,7 @@ export class Configurate<S extends SchemaObject> {
     callback: (event: ConfigChangeEvent) => void,
   ): Promise<() => Promise<void>> {
     const payload = this._buildLocationPayload();
-    await invoke("plugin:configurate|watch_file", { payload });
+    // Register JS listener first to avoid losing events.
     const unlisten = await tauriListen<ConfigChangeEvent>(
       "configurate://change",
       (event) => {
@@ -960,6 +960,12 @@ export class Configurate<S extends SchemaObject> {
         }
       },
     );
+    try {
+      await invoke("plugin:configurate|watch_file", { payload });
+    } catch (e) {
+      unlisten();
+      throw e;
+    }
     return async () => {
       unlisten();
       await invoke("plugin:configurate|unwatch_file", { payload }).catch(
@@ -1017,8 +1023,29 @@ export class Configurate<S extends SchemaObject> {
         payload,
       });
       return isPlainObject(plainData) ? plainData : null;
-    } catch {
-      return null;
+    } catch (e: unknown) {
+      // Only swallow "not found" errors — rethrow everything else.
+      if (
+        typeof e === "object" &&
+        e !== null &&
+        "io_kind" in e &&
+        (e as { io_kind: unknown }).io_kind === "not_found"
+      ) {
+        return null;
+      }
+      if (
+        typeof e === "object" &&
+        e !== null &&
+        "kind" in e &&
+        (e as { kind: unknown }).kind === "io" &&
+        "message" in e &&
+        typeof (e as { message: unknown }).message === "string" &&
+        ((e as { message: string }).message.toLowerCase().includes("not found") ||
+         (e as { message: string }).message.toLowerCase().includes("no such file"))
+      ) {
+        return null;
+      }
+      throw e;
     }
   }
 
@@ -1354,18 +1381,18 @@ export class Configurate<S extends SchemaObject> {
       } else {
         this._validateWriteData(data);
       }
-      // Inject schema version into write data when versioning is enabled.
+      // Work on a shallow copy to avoid mutating the caller's data object.
+      let writeData = data;
       if (this._opts.version !== undefined && isPlainObject(data)) {
-        (data as Record<string, unknown>)[CONFIGURATE_VERSION_KEY] =
-          this._opts.version;
+        writeData = { ...(data as Record<string, unknown>), [CONFIGURATE_VERSION_KEY]: this._opts.version };
       }
       if (!this._hasKeyringFields) {
         // No keyring fields — skip the deep clone in separateSecrets.
-        base.data = data;
+        base.data = writeData;
       } else {
         const { plain, keyringEntries } = separateSecrets(
           this._schema,
-          data as Record<string, unknown>,
+          writeData as Record<string, unknown>,
         );
         base.data = plain;
         if (keyringEntries.length > 0) {

@@ -369,22 +369,29 @@ fn execute_create<R: Runtime>(
         None
     };
 
-    if let Some((entries, opts)) =
-        keyring_pair("create", &payload.keyring_entries, &payload.keyring_options)?
-    {
-        apply_keyring_writes(&mut data, entries, opts)?;
+    let keyring = keyring_pair("create", &payload.keyring_entries, &payload.keyring_options)?;
+
+    // Nullify secrets in the on-disk data before saving.
+    if let Some((entries, _opts)) = &keyring {
+        for entry in *entries {
+            dotpath::nullify(&mut data, &entry.dotpath)?;
+        }
     }
 
+    // Persist plain data first so that if it fails, the keyring is not updated.
     save_plain_data(app, &payload, &data)?;
-    if let Err(e) = cleanup_stale_keyring_entries(
+
+    // Only write secrets to the OS keyring after successful storage write.
+    if let Some((entries, opts)) = keyring {
+        for entry in entries {
+            keyring_store::set(opts, &entry.id, &entry.value)?;
+        }
+    }
+
+    cleanup_stale_keyring_entries(
         &payload.keyring_delete_ids,
         payload.keyring_options.as_ref(),
-    ) {
-        eprintln!(
-            "[configurate] create completed but stale keyring cleanup failed for '{}': {}",
-            payload.file_name, e
-        );
-    }
+    )?;
     if payload.return_data {
         Ok(unlocked_data.unwrap_or(data))
     } else {
@@ -424,22 +431,29 @@ fn execute_save<R: Runtime>(
         None
     };
 
-    if let Some((entries, opts)) =
-        keyring_pair("save", &payload.keyring_entries, &payload.keyring_options)?
-    {
-        apply_keyring_writes(&mut data, entries, opts)?;
+    let keyring = keyring_pair("save", &payload.keyring_entries, &payload.keyring_options)?;
+
+    // Nullify secrets in the on-disk data before saving.
+    if let Some((entries, _opts)) = &keyring {
+        for entry in *entries {
+            dotpath::nullify(&mut data, &entry.dotpath)?;
+        }
     }
 
+    // Persist plain data first so that if it fails, the keyring is not updated.
     save_plain_data(app, &payload, &data)?;
-    if let Err(e) = cleanup_stale_keyring_entries(
+
+    // Only write secrets to the OS keyring after successful storage write.
+    if let Some((entries, opts)) = keyring {
+        for entry in entries {
+            keyring_store::set(opts, &entry.id, &entry.value)?;
+        }
+    }
+
+    cleanup_stale_keyring_entries(
         &payload.keyring_delete_ids,
         payload.keyring_options.as_ref(),
-    ) {
-        eprintln!(
-            "[configurate] save completed but stale keyring cleanup failed for '{}': {}",
-            payload.file_name, e
-        );
-    }
+    )?;
     if payload.return_data {
         Ok(unlocked_data.unwrap_or(data))
     } else {

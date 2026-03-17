@@ -39,6 +39,7 @@ pub struct PathOptions {
 
 /// A single keyring entry containing the keyring id and its plaintext value.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KeyringEntry {
     /// Unique keyring id as declared in the TS schema via `keyring(T, { id })`.
     pub id: String,
@@ -213,6 +214,14 @@ impl ConfiguratePayload {
             ));
         }
 
+        if !matches!(&provider_payload.kind, ProviderKind::Binary)
+            && provider_payload.kdf.is_some()
+        {
+            return Err(Error::InvalidPayload(
+                "kdf is only supported with provider.kind='binary'".to_string(),
+            ));
+        }
+
         let provider = match provider_payload.kind {
             ProviderKind::Json => NormalizedProvider::Json,
             ProviderKind::Yml => NormalizedProvider::Yml,
@@ -374,8 +383,9 @@ mod tests {
 
         let normalized = payload.normalize().expect("expected valid payload");
         match normalized.provider {
-            NormalizedProvider::Binary { encryption_key, .. } => {
+            NormalizedProvider::Binary { encryption_key, kdf } => {
                 assert_eq!(encryption_key.as_deref(), Some("my-key"));
+                assert!(matches!(kdf, KeyDerivation::Sha256), "expected default kdf to be Sha256");
             }
             _ => panic!("unexpected provider variant"),
         }

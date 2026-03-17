@@ -197,8 +197,8 @@ function keyringEntryId(baseId: string, path: KeyringPath): string {
 }
 
 function serializeKeyringValue(secret: unknown): string {
-  if (typeof secret === "string") return secret;
-  return JSON.stringify(secret) ?? "null";
+  const s = JSON.stringify(secret);
+  return s ?? "null";
 }
 
 function collectReadEntriesInArray(
@@ -632,6 +632,7 @@ function assertSchemaObject(
   }
   if (allowUnknownKeys) return;
   for (const key of Object.keys(objectValue)) {
+    if (key === CONFIGURATE_VERSION_KEY) continue;
     if (!(key in schema)) {
       throw new Error(
         `Configurate: schema validation failed at '${path}.${key}'. Key is not declared in schema.`,
@@ -800,7 +801,7 @@ export function assertNonEmptyId(ids: Set<string>, id: string): void {
 export function toBatchError(
   error: unknown,
   fallbackKind = "unknown",
-): { kind: string; message: string } {
+): { kind: string; message: string; io_kind?: string } {
   if (
     typeof error === "object" &&
     error !== null &&
@@ -809,7 +810,15 @@ export function toBatchError(
     "message" in error &&
     typeof (error as { message: unknown }).message === "string"
   ) {
-    return error as { kind: string; message: string };
+    const e = error as { kind: string; message: string; io_kind?: unknown };
+    const result: { kind: string; message: string; io_kind?: string } = {
+      kind: e.kind,
+      message: e.message,
+    };
+    if (typeof e.io_kind === "string") {
+      result.io_kind = e.io_kind;
+    }
+    return result;
   }
   if (error instanceof Error)
     return { kind: fallbackKind, message: error.message };

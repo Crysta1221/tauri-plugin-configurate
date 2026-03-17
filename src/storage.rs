@@ -273,13 +273,13 @@ impl BinaryArgon2Backend {
         }
     }
 
-    fn derive_key(&self, salt: &[u8]) -> std::result::Result<[u8; 32], Error> {
+    fn derive_key(&self, salt: &[u8]) -> std::result::Result<Zeroizing<[u8; 32]>, Error> {
         use argon2::Argon2;
 
         let argon2 = Argon2::default();
-        let mut key = [0u8; 32];
+        let mut key = Zeroizing::new([0u8; 32]);
         argon2
-            .hash_password_into(self.password.as_bytes(), salt, &mut key)
+            .hash_password_into(self.password.as_bytes(), salt, &mut *key)
             .map_err(|e| Error::Storage(format!("argon2 key derivation failed: {}", e)))?;
         Ok(key)
     }
@@ -303,7 +303,8 @@ impl StorageBackend for BinaryArgon2Backend {
         let ciphertext = &bytes[40..];
 
         let key = self.derive_key(salt)?;
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(&*key));
+        drop(key);
         let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
             Error::Storage("decryption failed: wrong key or corrupted data".to_string())
         })?;
@@ -329,7 +330,8 @@ impl StorageBackend for BinaryArgon2Backend {
         rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = XNonce::from_slice(&nonce_bytes);
 
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(&*key));
+        drop(key);
         let ciphertext = cipher
             .encrypt(nonce, json_bytes.as_slice())
             .map_err(|e| Error::Storage(format!("encryption failed: {}", e)))?;
@@ -357,6 +359,16 @@ fn json_to_toml_value(value: &Value) -> Result<toml::Value> {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Ok(toml::Value::Integer(i))
+            } else if let Some(u) = n.as_u64() {
+                // u64 values that fit in i64 range
+                if u <= i64::MAX as u64 {
+                    Ok(toml::Value::Integer(u as i64))
+                } else {
+                    Err(Error::Storage(format!(
+                        "TOML cannot represent unsigned integer {} (exceeds i64::MAX)",
+                        u
+                    )))
+                }
             } else {
                 n.as_f64()
                     .filter(|f| f.is_finite())
@@ -895,11 +907,11 @@ pub fn list_sqlite(
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| Error::Storage(e.to_string()))?;
-    let keys = stmt
+    let keys: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(|e| Error::Storage(e.to_string()))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Storage(e.to_string()))?;
 
     Ok(keys)
 }
