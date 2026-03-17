@@ -209,7 +209,8 @@ fn apply_keyring_reads(
                     dotpath::set(data, &entry.dotpath, val)?;
                 }
                 None => {
-                    // Entry absent from keyring — leave the field as null.
+                    // Entry absent from keyring — explicitly set null so stale plaintext is cleared.
+                    dotpath::set(data, &entry.dotpath, Value::Null)?;
                 }
             }
         } else {
@@ -594,22 +595,25 @@ fn emit_change<R: Runtime>(app: &AppHandle<R>, event: ConfigChangeEvent) {
     let _ = app.emit(CHANGE_EVENT, event);
 }
 
-/// Returns an `Arc<Mutex<()>>` that serialises file-system access to `path`
-/// within this process.  SQLite operations are excluded because SQLite manages
-/// its own concurrency via WAL locking.
+/// Returns an `Arc<Mutex<()>>` that serialises access to the backing store
+/// within this process.  For file-based providers the lock key is the config
+/// file path; for SQLite it is the database file path so that multi-step
+/// operations (patch: read→merge→write, reset: delete→create) are protected
+/// from concurrent interleaving even though SQLite manages cross-process
+/// concurrency via WAL locking.
 fn acquire_file_lock<R: Runtime>(
     app: &AppHandle<R>,
     payload: &NormalizedConfiguratePayload,
 ) -> Option<Arc<Mutex<()>>> {
-    if matches!(payload.provider, NormalizedProvider::Sqlite { .. }) {
-        return None;
-    }
-    if let Ok(path) = resolve_file_path(app, payload) {
-        let registry = app.state::<crate::locker::FileLockRegistry>();
-        Some(registry.acquire(path))
+    let path = if matches!(payload.provider, NormalizedProvider::Sqlite { .. }) {
+        resolve_sqlite_db_path(app, payload).ok()
     } else {
-        None
-    }
+        resolve_file_path(app, payload).ok()
+    };
+    path.map(|p| {
+        let registry = app.state::<crate::locker::FileLockRegistry>();
+        registry.acquire(p)
+    })
 }
 
 #[command]
