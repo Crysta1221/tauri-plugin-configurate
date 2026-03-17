@@ -21,7 +21,9 @@
     {
       "description": "A list of capabilities.",
       "type": "object",
-      "required": ["capabilities"],
+      "required": [
+        "capabilities"
+      ],
       "properties": {
         "capabilities": {
           "description": "The list of capabilities.",
@@ -37,7 +39,10 @@
     "Capability": {
       "description": "A grouping and boundary mechanism developers can use to isolate access to the IPC layer.\n\nIt controls application windows' and webviews' fine grained access to the Tauri core, application, or plugin commands. If a webview or its window is not matching any capability then it has no access to the IPC layer at all.\n\nThis can be done to create groups of windows, based on their required system access, which can reduce impact of frontend vulnerabilities in less privileged windows. Windows can be added to a capability by exact name (e.g. `main-window`) or glob patterns like `*` or `admin-*`. A Window can have none, one, or multiple associated capabilities.\n\n## Example\n\n```json { \"identifier\": \"main-user-files-write\", \"description\": \"This capability allows the `main` window on macOS and Windows access to `filesystem` write related commands and `dialog` commands to enable programmatic access to files selected by the user.\", \"windows\": [ \"main\" ], \"permissions\": [ \"core:default\", \"dialog:open\", { \"identifier\": \"fs:allow-write-text-file\", \"allow\": [{ \"path\": \"$HOME/test.txt\" }] }, ], \"platforms\": [\"macOS\",\"windows\"] } ```",
       "type": "object",
-      "required": ["identifier", "permissions"],
+      "required": [
+        "identifier",
+        "permissions"
+      ],
       "properties": {
         "identifier": {
           "description": "Identifier of the capability.\n\n## Example\n\n`main-user-files-write`",
@@ -88,7 +93,10 @@
         },
         "platforms": {
           "description": "Limit which target platforms this capability applies to.\n\nBy default all platforms are targeted.\n\n## Example\n\n`[\"macOS\",\"windows\"]`",
-          "type": ["array", "null"],
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "$ref": "#/definitions/Target"
           }
@@ -98,7 +106,9 @@
     "CapabilityRemote": {
       "description": "Configuration for remote URLs that are associated with the capability.",
       "type": "object",
-      "required": ["urls"],
+      "required": [
+        "urls"
+      ],
       "properties": {
         "urls": {
           "description": "Remote domains this capability refers to using the [URLPattern standard](https://urlpattern.spec.whatwg.org/).\n\n## Examples\n\n- \"https://*.mydomain.dev\": allows subdomains of mydomain.dev - \"https://mydomain.dev/api/*\": allows any subpath of mydomain.dev/api",
@@ -136,14 +146,20 @@
                 },
                 "allow": {
                   "description": "Data that defines what is allowed by the scope.",
-                  "type": ["array", "null"],
+                  "type": [
+                    "array",
+                    "null"
+                  ],
                   "items": {
                     "$ref": "#/definitions/Value"
                   }
                 },
                 "deny": {
                   "description": "Data that defines what is denied by the scope. This should be prioritized by validation logic.",
-                  "type": ["array", "null"],
+                  "type": [
+                    "array",
+                    "null"
+                  ],
                   "items": {
                     "$ref": "#/definitions/Value"
                   }
@@ -151,7 +167,9 @@
               }
             }
           ],
-          "required": ["identifier"]
+          "required": [
+            "identifier"
+          ]
         }
       ]
     },
@@ -159,10 +177,10 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-delete`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-unlock`",
+          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-patch`\n- `allow-delete`\n- `allow-exists`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-patch-all`\n- `allow-unlock`\n- `allow-watch-file`\n- `allow-unwatch-file`\n- `allow-list-configs`\n- `allow-reset`\n- `allow-export-config`\n- `allow-import-config`",
           "type": "string",
           "const": "configurate:default",
-          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-delete`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-unlock`"
+          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-patch`\n- `allow-delete`\n- `allow-exists`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-patch-all`\n- `allow-unlock`\n- `allow-watch-file`\n- `allow-unwatch-file`\n- `allow-list-configs`\n- `allow-reset`\n- `allow-export-config`\n- `allow-import-config`"
         },
         {
           "description": "Enables the create command without any pre-configured scope.",
@@ -177,6 +195,30 @@
           "markdownDescription": "Enables the delete command without any pre-configured scope."
         },
         {
+          "description": "Enables the exists command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-exists",
+          "markdownDescription": "Enables the exists command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-export-config",
+          "markdownDescription": "Enables the export_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the import_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-import-config",
+          "markdownDescription": "Enables the import_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_configs command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-list-configs",
+          "markdownDescription": "Enables the list_configs command without any pre-configured scope."
+        },
+        {
           "description": "Enables the load command without any pre-configured scope.",
           "type": "string",
           "const": "configurate:allow-load",
@@ -187,6 +229,24 @@
           "type": "string",
           "const": "configurate:allow-load-all",
           "markdownDescription": "Enables the load_all command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the patch command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-patch",
+          "markdownDescription": "Enables the patch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the patch_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-patch-all",
+          "markdownDescription": "Enables the patch_all command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reset command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-reset",
+          "markdownDescription": "Enables the reset command without any pre-configured scope."
         },
         {
           "description": "Enables the save command without any pre-configured scope.",
@@ -207,6 +267,18 @@
           "markdownDescription": "Enables the unlock command without any pre-configured scope."
         },
         {
+          "description": "Enables the unwatch_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-unwatch-file",
+          "markdownDescription": "Enables the unwatch_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the watch_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:allow-watch-file",
+          "markdownDescription": "Enables the watch_file command without any pre-configured scope."
+        },
+        {
           "description": "Denies the create command without any pre-configured scope.",
           "type": "string",
           "const": "configurate:deny-create",
@@ -219,6 +291,30 @@
           "markdownDescription": "Denies the delete command without any pre-configured scope."
         },
         {
+          "description": "Denies the exists command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-exists",
+          "markdownDescription": "Denies the exists command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-export-config",
+          "markdownDescription": "Denies the export_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the import_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-import-config",
+          "markdownDescription": "Denies the import_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_configs command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-list-configs",
+          "markdownDescription": "Denies the list_configs command without any pre-configured scope."
+        },
+        {
           "description": "Denies the load command without any pre-configured scope.",
           "type": "string",
           "const": "configurate:deny-load",
@@ -229,6 +325,24 @@
           "type": "string",
           "const": "configurate:deny-load-all",
           "markdownDescription": "Denies the load_all command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the patch command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-patch",
+          "markdownDescription": "Denies the patch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the patch_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-patch-all",
+          "markdownDescription": "Denies the patch_all command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reset command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-reset",
+          "markdownDescription": "Denies the reset command without any pre-configured scope."
         },
         {
           "description": "Denies the save command without any pre-configured scope.",
@@ -247,6 +361,18 @@
           "type": "string",
           "const": "configurate:deny-unlock",
           "markdownDescription": "Denies the unlock command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the unwatch_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-unwatch-file",
+          "markdownDescription": "Denies the unwatch_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the watch_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "configurate:deny-watch-file",
+          "markdownDescription": "Denies the watch_file command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
@@ -2278,27 +2404,37 @@
         {
           "description": "MacOS.",
           "type": "string",
-          "enum": ["macOS"]
+          "enum": [
+            "macOS"
+          ]
         },
         {
           "description": "Windows.",
           "type": "string",
-          "enum": ["windows"]
+          "enum": [
+            "windows"
+          ]
         },
         {
           "description": "Linux.",
           "type": "string",
-          "enum": ["linux"]
+          "enum": [
+            "linux"
+          ]
         },
         {
           "description": "Android.",
           "type": "string",
-          "enum": ["android"]
+          "enum": [
+            "android"
+          ]
         },
         {
           "description": "iOS.",
           "type": "string",
-          "enum": ["iOS"]
+          "enum": [
+            "iOS"
+          ]
         }
       ]
     }

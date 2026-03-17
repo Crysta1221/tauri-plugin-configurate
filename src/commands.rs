@@ -802,6 +802,10 @@ fn execute_patch<R: Runtime>(
     }
 
     save_plain_data(app, &payload, &existing)?;
+    cleanup_stale_keyring_entries(
+        &payload.keyring_delete_ids,
+        payload.keyring_options.as_ref(),
+    )?;
     if payload.return_data {
         Ok(unlocked_data.unwrap_or(existing))
     } else {
@@ -912,6 +916,18 @@ pub(crate) async fn unwatch_file<R: Runtime>(
     watcher.unwatch(&path, &target_id)
 }
 
+/// Returns `true` if `name` is a rotating-backup file (ends with `.bakN`
+/// where N is one or more ASCII digits).  Avoids false-positives for names
+/// that merely *contain* the substring `.bak` (e.g. `my.bakery.json`).
+fn is_backup_filename(name: &str) -> bool {
+    if let Some(pos) = name.rfind(".bak") {
+        let suffix = &name[pos + 4..];
+        !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+    } else {
+        false
+    }
+}
+
 /// Lists config files (by file name) in the resolved root directory.
 ///
 /// For file-based providers, scans the directory for files matching the
@@ -952,8 +968,8 @@ pub(crate) async fn list_configs<R: Runtime>(
                         continue;
                     }
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        // Skip backup files.
-                        if name.contains(".bak") {
+                        // Skip backup files (e.g. config.json.bak1).
+                        if is_backup_filename(name) {
                             continue;
                         }
                         // Skip temp files.
@@ -1233,5 +1249,83 @@ mod tests {
         }))
         .unwrap();
         assert!(validate_batch_ids(&payload).is_err());
+    }
+
+    // ── is_backup_filename ───────────────────────────────────────────────────
+
+    #[test]
+    fn backup_filename_matches_bak_with_digits() {
+        // Exact backup suffixes produced by create_backup().
+        assert!(is_backup_filename("config.json.bak1"));
+        assert!(is_backup_filename("config.json.bak2"));
+        assert!(is_backup_filename("config.json.bak3"));
+        assert!(is_backup_filename("settings.toml.bak10"));
+    }
+
+    #[test]
+    fn backup_filename_no_false_positive_for_bak_in_name() {
+        // Files whose names *contain* ".bak" but are not backup files.
+        assert!(!is_backup_filename("my.bakery.json"));
+        assert!(!is_backup_filename("feedback.json"));
+        assert!(!is_backup_filename("config.bak")); // no trailing digit(s)
+        assert!(!is_backup_filename("archive.bak.json"));
+    }
+
+    #[test]
+    fn backup_filename_rejects_plain_name() {
+        assert!(!is_backup_filename("config.json"));
+        assert!(!is_backup_filename("settings.toml"));
+    }
+
+    // ── list_configs file filtering ──────────────────────────────────────────
+
+    #[test]
+    fn list_configs_filter_excludes_backups_and_tmp() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Regular files that should be included.
+        fs::write(root.join("alpha.json"), b"{}").unwrap();
+        fs::write(root.join("beta.json"), b"{}").unwrap();
+
+        // Backup files that must be excluded.
+        fs::write(root.join("alpha.json.bak1"), b"{}").unwrap();
+        fs::write(root.join("alpha.json.bak2"), b"{}").unwrap();
+
+        // Temp file that must be excluded.
+        fs::write(root.join(".alpha.json.tmp"), b"{}").unwrap();
+
+        // File with ".bak" in the name but NOT a backup (should be included for Binary).
+        fs::write(root.join("my.bakery.bin"), b"data").unwrap();
+
+        let mut names: Vec<String> = Vec::new();
+        for entry in fs::read_dir(root).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if is_backup_filename(name) {
+                    continue;
+                }
+                if name.starts_with('.') && name.ends_with(".tmp") {
+                    continue;
+                }
+                // Simulate JSON-extension filter.
+                if path.extension().is_some_and(|x| x == "json") {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        names.sort();
+        assert_eq!(names, vec!["alpha.json", "beta.json"]);
+    }
+
+    #[test]
+    fn list_configs_filter_does_not_exclude_bakery_name() {
+        // Ensures "my.bakery.json" is NOT mistakenly treated as a backup file.
+        assert!(!is_backup_filename("my.bakery.json"));
     }
 }
