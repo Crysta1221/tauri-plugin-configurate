@@ -32,6 +32,7 @@ Store app settings as JSON, YAML, TOML, Binary, or SQLite — with sensitive val
 | 📤 **Export / Import** | `exportAs` / `importFrom` — convert configs between JSON, YAML, and TOML formats |
 | 🔄 **Config Diff** | `configDiff()` — compute structural differences between two config objects |
 | ✅ **Dry-run validation** | `validate()` / `validatePartial()` — check data against schema without writing to storage |
+| 💾 **Rolling backups** | `backup: true` — keep up to 3 backup copies before each write, auto-deleted on app exit |
 
 ---
 
@@ -249,6 +250,32 @@ SqliteProvider({ dbName: "app.db", tableName: "configs" }); // SQLite
 ```
 
 > [!NOTE] `BinaryProvider()` without an `encryptionKey` provides **no confidentiality**. Use `BinaryProvider({ encryptionKey })` or the OS keyring for sensitive values.
+
+---
+
+## Rolling Backups
+
+Enable rolling backups by passing `backup: true` to `Configurate`. Before each write, the previous file is copied to `.bak1` (and older backups are rotated). All backup files are **automatically deleted when the application exits**.
+
+```ts
+const config = new Configurate({
+  schema: appSchema,
+  fileName: "app.json",
+  baseDir: BaseDirectory.AppConfig,
+  provider: JsonProvider(),
+  backup: true, // opt-in — default is false
+});
+```
+
+Up to 3 backup slots are kept per file:
+
+| File | Contents |
+| --- | --- |
+| `app.json.bak1` | Most recent backup (before last write) |
+| `app.json.bak2` | Two writes ago |
+| `app.json.bak3` | Three writes ago |
+
+> [!NOTE] Backups apply only to file-based providers (JSON, YAML, TOML, Binary). SQLite handles durability internally via WAL mode and is unaffected by this option.
 
 ---
 
