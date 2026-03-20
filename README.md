@@ -6,7 +6,8 @@ Store app settings as JSON, YAML, TOML, Binary, or SQLite — with sensitive val
 
 ---
 
-> [!WARNING] **Pre-release software (0.x)**
+> [!WARNING]
+> **Pre-release software (0.x)**
 >
 > This plugin is under active development and has **not reached a stable 1.0 release**.
 >
