@@ -250,7 +250,8 @@ BinaryProvider(); // Unencrypted binary
 SqliteProvider({ dbName: "app.db", tableName: "configs" }); // SQLite
 ```
 
-> [!NOTE] `BinaryProvider()` without an `encryptionKey` provides **no confidentiality**. Use `BinaryProvider({ encryptionKey })` or the OS keyring for sensitive values.
+> [!NOTE]
+> `BinaryProvider()` without an `encryptionKey` provides **no confidentiality**. Use `BinaryProvider({ encryptionKey })` or the OS keyring for sensitive values.
 
 ---
 
