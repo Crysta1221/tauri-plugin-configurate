@@ -277,7 +277,8 @@ Up to 3 backup slots are kept per file:
 | `app.json.bak2` | Two writes ago |
 | `app.json.bak3` | Three writes ago |
 
-> [!NOTE] Backups apply only to file-based providers (JSON, YAML, TOML, Binary). SQLite handles durability internally via WAL mode and is unaffected by this option.
+> [!NOTE]
+> Backups apply only to file-based providers (JSON, YAML, TOML, Binary). SQLite handles durability internally via WAL mode and is unaffected by this option.
 
 ---
 
