@@ -177,20 +177,6 @@ fn resolve_sqlite_db_path<R: Runtime>(
     Ok(root.join(db_name))
 }
 
-/// Writes keyring entries to the OS keyring and nullifies the corresponding
-/// dotpaths in `data` so that secrets are never persisted to disk.
-fn apply_keyring_writes(
-    data: &mut Value,
-    entries: &[KeyringEntry],
-    opts: &KeyringOptions,
-) -> Result<()> {
-    for entry in entries {
-        keyring_store::set(opts, &entry.id, &entry.value)?;
-        // Replace the secret value with null in the on-disk representation.
-        dotpath::nullify(data, &entry.dotpath)?;
-    }
-    Ok(())
-}
 
 /// Reads keyring entries and inlines the plaintext values back into `data`
 /// at the correct dotpath location.
@@ -372,7 +358,7 @@ fn execute_create<R: Runtime>(
         .unwrap_or(Value::Object(serde_json::Map::new()));
 
     // Keep a copy for the unlocked response before nullifying secrets.
-    let unlocked_data = if payload.with_unlock {
+    let unlocked_data = if payload.with_unlock && payload.return_data {
         Some(data.clone())
     } else {
         None
@@ -434,7 +420,7 @@ fn execute_save<R: Runtime>(
         .take()
         .unwrap_or(Value::Object(serde_json::Map::new()));
 
-    let unlocked_data = if payload.with_unlock {
+    let unlocked_data = if payload.with_unlock && payload.return_data {
         Some(data.clone())
     } else {
         None
@@ -730,8 +716,8 @@ pub(crate) async fn save_all<R: Runtime>(
     let mut change_events = Vec::new();
 
     for entry in payload.entries {
-        let entry_id = entry.id.clone();
-        let entry_result = match entry.payload.normalize().and_then(|p| {
+        let crate::models::BatchEntryPayload { id, payload } = entry;
+        let entry_result = match payload.normalize().and_then(|p| {
             let change_event = build_change_event(&p, "save");
             let lock = acquire_file_lock(&app, &p);
             let _guard = lock.as_ref().map(|l| l.lock().unwrap_or_else(|e| e.into_inner()));
@@ -746,7 +732,7 @@ pub(crate) async fn save_all<R: Runtime>(
             }),
         };
 
-        results.insert(entry_id, entry_result);
+        results.insert(id, entry_result);
     }
 
     for change_event in change_events {
@@ -801,7 +787,7 @@ fn execute_patch<R: Runtime>(
 
     deep_merge(&mut existing, patch_data);
 
-    let unlocked_data = if payload.with_unlock {
+    let unlocked_data = if payload.with_unlock && payload.return_data {
         Some(existing.clone())
     } else {
         None
@@ -877,8 +863,8 @@ pub(crate) async fn patch_all<R: Runtime>(
     let mut change_events = Vec::new();
 
     for entry in payload.entries {
-        let entry_id = entry.id.clone();
-        let entry_result = match entry.payload.normalize().and_then(|p| {
+        let crate::models::BatchEntryPayload { id, payload } = entry;
+        let entry_result = match payload.normalize().and_then(|p| {
             let change_event = build_change_event(&p, "patch");
             let lock = acquire_file_lock(&app, &p);
             let _guard = lock.as_ref().map(|l| l.lock().unwrap_or_else(|e| e.into_inner()));
@@ -893,7 +879,7 @@ pub(crate) async fn patch_all<R: Runtime>(
             }),
         };
 
-        results.insert(entry_id, entry_result);
+        results.insert(id, entry_result);
     }
 
     for change_event in change_events {
@@ -1087,6 +1073,26 @@ pub struct ImportPayload {
     pub parse_only: bool,
 }
 
+fn parse_import_content(format: &str, content: &str) -> Result<Value> {
+    match format {
+        "json" => serde_json::from_str(content).map_err(|e| Error::Storage(e.to_string())),
+        "yml" | "yaml" => {
+            let yaml_val: serde_yml::Value =
+                serde_yml::from_str(content).map_err(|e| Error::Storage(e.to_string()))?;
+            serde_json::to_value(yaml_val).map_err(|e| Error::Storage(e.to_string()))
+        }
+        "toml" => {
+            let toml_val: toml::Value =
+                toml::from_str(content).map_err(|e| Error::Storage(e.to_string()))?;
+            serde_json::to_value(toml_val).map_err(|e| Error::Storage(e.to_string()))
+        }
+        other => Err(Error::InvalidPayload(format!(
+            "unsupported import format '{}': expected json, yml, or toml",
+            other
+        ))),
+    }
+}
+
 /// Imports config data from a string in the given format, saving it to the
 /// target config location.
 #[command]
@@ -1103,43 +1109,15 @@ pub(crate) async fn import_config<R: Runtime>(
 
     let data: Value = match target.data.clone() {
         Some(data) => data,
-        None => match source_format
-            .as_deref()
-            .ok_or_else(|| Error::InvalidPayload("missing sourceFormat".to_string()))?
-        {
-            "json" => serde_json::from_str(
-                &content
-                    .as_deref()
-                    .ok_or_else(|| Error::InvalidPayload("missing content".to_string()))?,
-            )
-            .map_err(|e| Error::Storage(e.to_string()))?,
-            "yml" | "yaml" => {
-                let yaml_val: serde_yml::Value = serde_yml::from_str(
-                    &content
-                        .as_deref()
-                        .ok_or_else(|| Error::InvalidPayload("missing content".to_string()))?,
-                )
-                .map_err(|e| Error::Storage(e.to_string()))?;
-                serde_json::to_value(yaml_val)
-                    .map_err(|e| Error::Storage(e.to_string()))?
-            }
-            "toml" => {
-                let toml_val: toml::Value = toml::from_str(
-                    &content
-                        .as_deref()
-                        .ok_or_else(|| Error::InvalidPayload("missing content".to_string()))?,
-                )
-                .map_err(|e| Error::Storage(e.to_string()))?;
-                serde_json::to_value(toml_val)
-                    .map_err(|e| Error::Storage(e.to_string()))?
-            }
-            other => {
-                return Err(Error::InvalidPayload(format!(
-                    "unsupported import format '{}': expected json, yml, or toml",
-                    other
-                )))
-            }
-        },
+        None => {
+            let format = source_format
+                .as_deref()
+                .ok_or_else(|| Error::InvalidPayload("missing sourceFormat".to_string()))?;
+            let raw = content
+                .as_deref()
+                .ok_or_else(|| Error::InvalidPayload("missing content".to_string()))?;
+            parse_import_content(format, raw)?
+        }
     };
 
     if parse_only {

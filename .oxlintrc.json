@@ -15,5 +15,5 @@
     "browser": true,
     "es2021": true
   },
-  "extends": ["node_modules/**"]
+  "ignorePatterns": ["node_modules/**", "dist-js/**", "target/**"]
 }

@@ -535,7 +535,7 @@ describe("Single config operations", () => {
           };
           expect(payload.targetFormat).toBe("yml");
           expect(
-            (payload.source?.data as Record<string, unknown>).token,
+            ((payload.source || {}).data as Record<string, unknown>).token,
           ).toBe("secret");
           return "theme: dark\ntoken: secret\n";
         }
@@ -580,7 +580,11 @@ describe("Single config operations", () => {
             value: string;
           }>;
           expect(entries).toHaveLength(1);
-          expect(entries[0]).toMatchObject({ id: "tok", value: "secret" });
+          expect(entries[0]).toMatchObject({
+            id: "tok",
+            dotpath: "token",
+            value: '"secret"',
+          });
           const opts = target.keyringOptions as Record<string, unknown>;
           expect(opts.service).toBe("svc");
           expect(opts.account).toBe("acc");
@@ -1542,6 +1546,9 @@ describe("Keyring field handling", () => {
   it("separateSecrets should strip keyring values and produce entries on create", async () => {
     const { Configurate, JsonProvider, defineConfig, keyring, invokeMock } =
       await loadApi(async (command) => {
+        if (command === "plugin:configurate|load") {
+          throw new Error("not found");
+        }
         if (command === "plugin:configurate|create") return null;
         throw new Error(`unexpected command: ${command}`);
       });
@@ -1584,7 +1591,7 @@ describe("Keyring field handling", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].id).toBe("api-key");
     expect(entries[0].dotpath).toBe("apiKey");
-    expect(entries[0].value).toBe("secret-123");
+    expect(entries[0].value).toBe('"secret-123"');
 
     // Keyring options should be set
     const kOpts = payload.keyringOptions as Record<string, unknown>;
@@ -1802,8 +1809,8 @@ describe("Keyring field handling", () => {
       value: string;
     }>;
     expect(entries).toHaveLength(2);
-    expect(entries[0].value).toBe("secret1");
-    expect(entries[1].value).toBe("secret2");
+    expect(entries[0].value).toBe('"secret1"');
+    expect(entries[1].value).toBe('"secret2"');
     // Array keyring entries should have encoded dotpath in their id
     expect(entries[0].dotpath).toBe("tokens.0");
     expect(entries[1].dotpath).toBe("tokens.1");

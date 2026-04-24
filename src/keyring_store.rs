@@ -27,6 +27,30 @@ fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_opts(opts: &KeyringOptions) -> Result<()> {
+    if opts.service.trim().is_empty() {
+        return Err(Error::InvalidPayload(
+            "keyring service must not be empty".to_string(),
+        ));
+    }
+    if opts.account.trim().is_empty() {
+        return Err(Error::InvalidPayload(
+            "keyring account must not be empty".to_string(),
+        ));
+    }
+    if opts.service.chars().any(char::is_control) {
+        return Err(Error::InvalidPayload(
+            "keyring service must not contain control characters".to_string(),
+        ));
+    }
+    if opts.account.chars().any(char::is_control) {
+        return Err(Error::InvalidPayload(
+            "keyring account must not contain control characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Builds the OS keyring user string: `{account}/{id}`.
 fn build_user(opts: &KeyringOptions, id: &str) -> String {
     format!("{}/{}", opts.account, id)
@@ -36,6 +60,7 @@ fn build_user(opts: &KeyringOptions, id: &str) -> String {
 /// service = `opts.service`, user = `{account}/{id}`.
 /// If an existing entry exists it will be overwritten.
 pub fn set(opts: &KeyringOptions, id: &str, value: &str) -> Result<()> {
+    validate_opts(opts)?;
     validate_id(id)?;
     let user = build_user(opts, id);
     let entry = keyring::Entry::new(&opts.service, &user)?;
@@ -46,6 +71,7 @@ pub fn set(opts: &KeyringOptions, id: &str, value: &str) -> Result<()> {
 /// Retrieves the value from the OS keyring.
 /// service = `opts.service`, user = `{account}/{id}`.
 pub fn get(opts: &KeyringOptions, id: &str) -> Result<String> {
+    validate_opts(opts)?;
     validate_id(id)?;
     let user = build_user(opts, id);
     let entry = keyring::Entry::new(&opts.service, &user)?;
@@ -56,6 +82,7 @@ pub fn get(opts: &KeyringOptions, id: &str) -> Result<String> {
 /// Like `get`, but returns `Ok(None)` when the entry does not exist instead of an error.
 /// Used for optional keyring fields.
 pub fn get_optional(opts: &KeyringOptions, id: &str) -> Result<Option<String>> {
+    validate_opts(opts)?;
     validate_id(id)?;
     let user = build_user(opts, id);
     let entry = keyring::Entry::new(&opts.service, &user)?;
@@ -69,6 +96,7 @@ pub fn get_optional(opts: &KeyringOptions, id: &str) -> Result<Option<String>> {
 /// Deletes the entry from the OS keyring.
 /// Returns `Ok(())` even when the entry does not exist.
 pub fn delete(opts: &KeyringOptions, id: &str) -> Result<()> {
+    validate_opts(opts)?;
     validate_id(id)?;
     let user = build_user(opts, id);
     let entry = keyring::Entry::new(&opts.service, &user)?;

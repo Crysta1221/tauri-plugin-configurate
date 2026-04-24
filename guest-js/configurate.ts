@@ -39,6 +39,25 @@ export interface KeyringOptions {
   account: string;
 }
 
+function validateKeyringOptions(opts: KeyringOptions): void {
+  if (!opts.service.trim()) {
+    throw new Error('Configurate: keyring "service" must not be empty.');
+  }
+  if (!opts.account.trim()) {
+    throw new Error('Configurate: keyring "account" must not be empty.');
+  }
+  if (/\p{Cc}/u.test(opts.service)) {
+    throw new Error(
+      'Configurate: keyring "service" must not contain control characters.',
+    );
+  }
+  if (/\p{Cc}/u.test(opts.account)) {
+    throw new Error(
+      'Configurate: keyring "account" must not contain control characters.',
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Config objects
 // ---------------------------------------------------------------------------
@@ -245,6 +264,7 @@ export class LockedConfig<S extends SchemaObject> {
   }
 
   async unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
+    validateKeyringOptions(opts);
     return this._configurate._unlockFromData(
       this.data as Record<string, unknown>,
       opts,
@@ -302,6 +322,7 @@ export class LazyConfigEntry<S extends SchemaObject> {
   ) {}
 
   lock(opts: KeyringOptions): this {
+    validateKeyringOptions(opts);
     this._keyringOpts = opts;
     return this;
   }
@@ -315,6 +336,7 @@ export class LazyConfigEntry<S extends SchemaObject> {
   }
 
   unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
+    validateKeyringOptions(opts);
     return this._configurate._executeUnlock(this._op, this._data, opts);
   }
 }
@@ -330,6 +352,7 @@ export class LazyPatchEntry<S extends SchemaObject> {
   ) {}
 
   lock(opts: KeyringOptions): this {
+    validateKeyringOptions(opts);
     this._keyringOpts = opts;
     return this;
   }
@@ -355,6 +378,7 @@ export class LazyPatchEntry<S extends SchemaObject> {
   }
 
   unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
+    validateKeyringOptions(opts);
     return this._configurate._executePatchUnlock(
       this._data,
       opts,
@@ -373,6 +397,7 @@ export class LazyResetEntry<S extends SchemaObject> {
   ) {}
 
   lock(opts: KeyringOptions): this {
+    validateKeyringOptions(opts);
     this._keyringOpts = opts;
     return this;
   }
@@ -382,6 +407,7 @@ export class LazyResetEntry<S extends SchemaObject> {
   }
 
   async unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
+    validateKeyringOptions(opts);
     return this._configurate._executeResetUnlock(this._data, opts);
   }
 }
@@ -431,6 +457,7 @@ class LoadAllBuilder {
   }
 
   unlock(id: string, opts: KeyringOptions): this {
+    validateKeyringOptions(opts);
     if (!this._idSet.has(id)) {
       throw new Error(`Unknown id '${id}' passed to loadAll().unlock().`);
     }
@@ -439,6 +466,7 @@ class LoadAllBuilder {
   }
 
   unlockAll(opts: KeyringOptions): this {
+    validateKeyringOptions(opts);
     this._unlockAll = opts;
     return this;
   }
@@ -540,6 +568,7 @@ class SaveAllBuilder {
   }
 
   lock(id: string, opts: KeyringOptions): this {
+    validateKeyringOptions(opts);
     if (!this._idSet.has(id)) {
       throw new Error(`Unknown id '${id}' passed to saveAll().lock().`);
     }
@@ -548,6 +577,7 @@ class SaveAllBuilder {
   }
 
   lockAll(opts: KeyringOptions): this {
+    validateKeyringOptions(opts);
     this._lockAll = opts;
     return this;
   }
@@ -632,6 +662,7 @@ class PatchAllBuilder {
   }
 
   lock(id: string, opts: KeyringOptions): this {
+    validateKeyringOptions(opts);
     if (!this._idSet.has(id)) {
       throw new Error(`Unknown id '${id}' passed to patchAll().lock().`);
     }
@@ -640,6 +671,7 @@ class PatchAllBuilder {
   }
 
   lockAll(opts: KeyringOptions): this {
+    validateKeyringOptions(opts);
     this._lockAll = opts;
     return this;
   }
@@ -821,6 +853,9 @@ export class Configurate<S extends SchemaObject> {
     format: "json" | "yml" | "toml",
     opts?: KeyringOptions | null,
   ): Promise<string> {
+    if (opts) {
+      validateKeyringOptions(opts);
+    }
     const loaded = opts
       ? await this.load().unlock(opts)
       : await this.load().run();
@@ -848,6 +883,9 @@ export class Configurate<S extends SchemaObject> {
     format: "json" | "yml" | "toml",
     opts?: KeyringOptions | null,
   ): Promise<void> {
+    if (opts) {
+      validateKeyringOptions(opts);
+    }
     const parsed = await invoke<unknown>("plugin:configurate|import_config", {
       payload: {
         target: this._buildLocationPayload(),
@@ -987,6 +1025,9 @@ export class Configurate<S extends SchemaObject> {
 
   async delete(opts?: KeyringOptions | null): Promise<void> {
     const keyringOpts = opts ?? null;
+    if (keyringOpts) {
+      validateKeyringOptions(keyringOpts);
+    }
     const payload = this._buildPayload("delete", undefined, null, false);
 
     if (keyringOpts !== null && this._hasKeyringFields) {
@@ -1036,6 +1077,13 @@ export class Configurate<S extends SchemaObject> {
       return isPlainObject(plainData) ? plainData : null;
     } catch (e: unknown) {
       // Only swallow "not found" errors — rethrow everything else.
+      const messageLower =
+        typeof e === "object" &&
+        e !== null &&
+        "message" in e &&
+        typeof (e as { message: unknown }).message === "string"
+          ? (e as { message: string }).message.toLowerCase()
+          : null;
       if (
         typeof e === "object" &&
         e !== null &&
@@ -1049,10 +1097,16 @@ export class Configurate<S extends SchemaObject> {
         e !== null &&
         "kind" in e &&
         (e as { kind: unknown }).kind === "io" &&
-        "message" in e &&
-        typeof (e as { message: unknown }).message === "string" &&
-        ((e as { message: string }).message.toLowerCase().includes("not found") ||
-         (e as { message: string }).message.toLowerCase().includes("no such file"))
+        messageLower !== null &&
+        (messageLower.includes("not found") ||
+          messageLower.includes("no such file"))
+      ) {
+        return null;
+      }
+      if (
+        messageLower !== null &&
+        (messageLower.includes("not found") ||
+          messageLower.includes("no such file"))
       ) {
         return null;
       }
@@ -1102,11 +1156,8 @@ export class Configurate<S extends SchemaObject> {
 
     const { result, didMigrate } = this._applyPostLoad(data);
     if (didMigrate) {
-      await this._savePlain(result).catch((e: unknown) => {
-        console.warn(
-          `[configurate] Failed to auto-save migrated config '${this._opts.fileName}':`,
-          e,
-        );
+      await this._savePlain(result).catch((_e: unknown) => {
+        // Failures are logged as warnings but never surface to the caller
       });
     }
 
