@@ -6,7 +6,8 @@ Store app settings as JSON, YAML, TOML, Binary, or SQLite — with sensitive val
 
 ---
 
-> [!WARNING] **Pre-release software (0.x)**
+> [!WARNING]
+> **Pre-release software (0.x)**
 >
 > This plugin is under active development and has **not reached a stable 1.0 release**.
 >
@@ -249,7 +250,8 @@ BinaryProvider(); // Unencrypted binary
 SqliteProvider({ dbName: "app.db", tableName: "configs" }); // SQLite
 ```
 
-> [!NOTE] `BinaryProvider()` without an `encryptionKey` provides **no confidentiality**. Use `BinaryProvider({ encryptionKey })` or the OS keyring for sensitive values.
+> [!NOTE]
+> `BinaryProvider()` without an `encryptionKey` provides **no confidentiality**. Use `BinaryProvider({ encryptionKey })` or the OS keyring for sensitive values.
 
 ---
 
@@ -275,7 +277,8 @@ Up to 3 backup slots are kept per file:
 | `app.json.bak2` | Two writes ago |
 | `app.json.bak3` | Three writes ago |
 
-> [!NOTE] Backups apply only to file-based providers (JSON, YAML, TOML, Binary). SQLite handles durability internally via WAL mode and is unaffected by this option.
+> [!NOTE]
+> Backups apply only to file-based providers (JSON, YAML, TOML, Binary). SQLite handles durability internally via WAL mode and is unaffected by this option.
 
 ---
 
