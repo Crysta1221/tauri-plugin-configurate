@@ -158,26 +158,6 @@ fn resolve_file_path<R: Runtime>(
     Ok(root.join(&payload.file_name))
 }
 
-fn resolve_sqlite_db_path<R: Runtime>(
-    app: &AppHandle<R>,
-    payload: &NormalizedConfiguratePayload,
-) -> Result<PathBuf> {
-    let NormalizedProvider::Sqlite { db_name, .. } = &payload.provider else {
-        return Err(Error::InvalidPayload(
-            "resolve_sqlite_db_path called for non-sqlite provider".to_string(),
-        ));
-    };
-    validate_file_name(db_name)?;
-    let root = resolve_root(
-        app,
-        payload.base_dir,
-        payload.dir_name.as_deref(),
-        payload.current_path.as_deref(),
-    )?;
-    Ok(root.join(db_name))
-}
-
-
 /// Reads keyring entries and inlines the plaintext values back into `data`
 /// at the correct dotpath location.
 fn apply_keyring_reads(
@@ -271,26 +251,13 @@ fn load_plain_data<R: Runtime>(
     app: &AppHandle<R>,
     payload: &NormalizedConfiguratePayload,
 ) -> Result<Value> {
-    match &payload.provider {
-        NormalizedProvider::Sqlite { table_name, .. } => {
-            let db_path = resolve_sqlite_db_path(app, payload)?;
-            storage::read_sqlite(
-                &db_path,
-                table_name,
-                &payload.file_name,
-                &payload.schema_columns,
-            )
-        }
-        _ => {
-            let backend = storage::file_backend_for(
-                &payload.provider,
-                false,
-                Arc::new(storage::BackupRegistry::new()),
-            )?;
-            let path = resolve_file_path(app, payload)?;
-            backend.read(&path)
-        }
-    }
+    let backend = storage::file_backend_for(
+        &payload.provider,
+        false,
+        Arc::new(storage::BackupRegistry::new()),
+    )?;
+    let path = resolve_file_path(app, payload)?;
+    backend.read(&path)
 }
 
 fn save_plain_data<R: Runtime>(
@@ -298,54 +265,27 @@ fn save_plain_data<R: Runtime>(
     payload: &NormalizedConfiguratePayload,
     data: &Value,
 ) -> Result<()> {
-    match &payload.provider {
-        NormalizedProvider::Sqlite { table_name, .. } => {
-            let db_path = resolve_sqlite_db_path(app, payload)?;
-            storage::write_sqlite(
-                &db_path,
-                table_name,
-                &payload.file_name,
-                data,
-                &payload.schema_columns,
-            )
-        }
-        _ => {
-            let registry = app
-                .try_state::<Arc<storage::BackupRegistry>>()
-                .map(|s| Arc::clone(s.inner()))
-                .unwrap_or_else(|| Arc::new(storage::BackupRegistry::new()));
-            let backend = storage::file_backend_for(&payload.provider, payload.backup, registry)?;
-            let path = resolve_file_path(app, payload)?;
-            backend.write(&path, data)
-        }
-    }
+    let registry = app
+        .try_state::<Arc<storage::BackupRegistry>>()
+        .map(|s| Arc::clone(s.inner()))
+        .unwrap_or_else(|| Arc::new(storage::BackupRegistry::new()));
+    let backend = storage::file_backend_for(&payload.provider, payload.backup, registry)?;
+    let path = resolve_file_path(app, payload)?;
+    backend.write(&path, data)
 }
 
 fn delete_plain_data<R: Runtime>(
     app: &AppHandle<R>,
     payload: &NormalizedConfiguratePayload,
 ) -> Result<()> {
-    match &payload.provider {
-        NormalizedProvider::Sqlite { table_name, .. } => {
-            let db_path = resolve_sqlite_db_path(app, payload)?;
-            storage::delete_sqlite(
-                &db_path,
-                table_name,
-                &payload.file_name,
-                &payload.schema_columns,
-            )
-        }
-        _ => {
-            let path = resolve_file_path(app, payload)?;
-            // Remove the config file. Treat "file not found" as success.
-            match std::fs::remove_file(&path) {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-            Ok(())
-        }
+    let path = resolve_file_path(app, payload)?;
+    // Remove the config file. Treat "file not found" as success.
+    match std::fs::remove_file(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
     }
+    Ok(())
 }
 
 fn execute_create<R: Runtime>(
@@ -492,21 +432,8 @@ fn execute_exists<R: Runtime>(
     app: &AppHandle<R>,
     payload: NormalizedConfiguratePayload,
 ) -> Result<bool> {
-    match &payload.provider {
-        NormalizedProvider::Sqlite { table_name, .. } => {
-            let db_path = resolve_sqlite_db_path(app, &payload)?;
-            storage::exists_sqlite(
-                &db_path,
-                table_name,
-                &payload.file_name,
-                &payload.schema_columns,
-            )
-        }
-        _ => {
-            let path = resolve_file_path(app, &payload)?;
-            Ok(path.is_file())
-        }
-    }
+    let path = resolve_file_path(app, &payload)?;
+    Ok(path.is_file())
 }
 
 fn to_batch_error_value(error: &Error) -> Value {
@@ -549,28 +476,19 @@ fn provider_kind(provider: &NormalizedProvider) -> &'static str {
         NormalizedProvider::Yml => "yml",
         NormalizedProvider::Toml => "toml",
         NormalizedProvider::Binary { .. } => "binary",
-        NormalizedProvider::Sqlite { .. } => "sqlite",
     }
 }
 
 fn change_target_id(payload: &NormalizedConfiguratePayload) -> String {
     let base_dir_key = serde_json::to_string(&payload.base_dir).unwrap_or_else(|_| "null".into());
-    let (db_name, table_name) = match &payload.provider {
-        NormalizedProvider::Sqlite { db_name, table_name } => {
-            (db_name.as_str(), table_name.as_str())
-        }
-        _ => ("", ""),
-    };
 
     format!(
-        "{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         base_dir_key,
         provider_kind(&payload.provider),
         payload.file_name,
         payload.dir_name.as_deref().unwrap_or(""),
         payload.current_path.as_deref().unwrap_or(""),
-        db_name,
-        table_name
     )
 }
 
@@ -589,22 +507,13 @@ fn emit_change<R: Runtime>(app: &AppHandle<R>, event: ConfigChangeEvent) {
     let _ = app.emit(CHANGE_EVENT, event);
 }
 
-/// Returns an `Arc<Mutex<()>>` that serialises access to the backing store
-/// within this process.  For file-based providers the lock key is the config
-/// file path; for SQLite it is the database file path so that multi-step
-/// operations (patch: read→merge→write, reset: delete→create) are protected
-/// from concurrent interleaving even though SQLite manages cross-process
-/// concurrency via WAL locking.
+/// Returns an `Arc<Mutex<()>>` that serialises access to the config file path
+/// within this process so multi-step operations (patch, reset) cannot interleave.
 fn acquire_file_lock<R: Runtime>(
     app: &AppHandle<R>,
     payload: &NormalizedConfiguratePayload,
 ) -> Option<Arc<Mutex<()>>> {
-    let path = if matches!(payload.provider, NormalizedProvider::Sqlite { .. }) {
-        resolve_sqlite_db_path(app, payload).ok()
-    } else {
-        resolve_file_path(app, payload).ok()
-    };
-    path.map(|p| {
+    resolve_file_path(app, payload).ok().map(|p| {
         let registry = app.state::<crate::locker::FileLockRegistry>();
         registry.acquire(p)
     })
@@ -898,12 +807,6 @@ pub(crate) async fn watch_file<R: Runtime>(
     payload: ConfiguratePayload,
 ) -> Result<()> {
     let normalized = payload.normalize()?;
-    // Only file-based providers support watching.
-    if matches!(normalized.provider, NormalizedProvider::Sqlite { .. }) {
-        return Err(Error::InvalidPayload(
-            "watch_file is not supported for the SQLite provider".to_string(),
-        ));
-    }
     let path = resolve_file_path(&app, &normalized)?;
     let change_event = build_change_event(&normalized, "external_change");
     let watcher = app.state::<crate::watcher::WatcherState>();
@@ -917,9 +820,6 @@ pub(crate) async fn unwatch_file<R: Runtime>(
     payload: ConfiguratePayload,
 ) -> Result<()> {
     let normalized = payload.normalize()?;
-    if matches!(normalized.provider, NormalizedProvider::Sqlite { .. }) {
-        return Ok(());
-    }
     let path = resolve_file_path(&app, &normalized)?;
     let target_id = change_target_id(&normalized);
     let watcher = app.state::<crate::watcher::WatcherState>();
@@ -939,10 +839,6 @@ fn is_backup_filename(name: &str) -> bool {
 }
 
 /// Lists config files (by file name) in the resolved root directory.
-///
-/// For file-based providers, scans the directory for files matching the
-/// provider's extension.  For SQLite, queries `config_key` values from the
-/// table.
 #[command]
 pub(crate) async fn list_configs<R: Runtime>(
     app: AppHandle<R>,
@@ -950,57 +846,48 @@ pub(crate) async fn list_configs<R: Runtime>(
 ) -> Result<Vec<String>> {
     let normalized = payload.normalize()?;
 
-    match &normalized.provider {
-        NormalizedProvider::Sqlite { table_name, .. } => {
-            let db_path = resolve_sqlite_db_path(&app, &normalized)?;
-            storage::list_sqlite(&db_path, table_name)
-        }
-        _ => {
-            let root = resolve_root(
-                &app,
-                normalized.base_dir,
-                normalized.dir_name.as_deref(),
-                normalized.current_path.as_deref(),
-            )?;
-            let ext = match &normalized.provider {
-                NormalizedProvider::Json => Some("json"),
-                NormalizedProvider::Yml => Some("yml"),
-                NormalizedProvider::Toml => Some("toml"),
-                NormalizedProvider::Binary { .. } => None,
-                NormalizedProvider::Sqlite { .. } => unreachable!(),
-            };
-            let mut names = Vec::new();
-            if root.is_dir() {
-                for entry in std::fs::read_dir(&root)? {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if !path.is_file() {
-                        continue;
-                    }
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        // Skip backup files (e.g. config.json.bak1).
-                        if is_backup_filename(name) {
-                            continue;
-                        }
-                        // Skip temp files.
-                        if name.starts_with('.') && name.ends_with(".tmp") {
-                            continue;
-                        }
-                        match ext {
-                            Some(e) => {
-                                if path.extension().is_some_and(|x| x == e) {
-                                    names.push(name.to_string());
-                                }
-                            }
-                            None => names.push(name.to_string()),
+    let root = resolve_root(
+        &app,
+        normalized.base_dir,
+        normalized.dir_name.as_deref(),
+        normalized.current_path.as_deref(),
+    )?;
+    let ext = match &normalized.provider {
+        NormalizedProvider::Json => Some("json"),
+        NormalizedProvider::Yml => Some("yml"),
+        NormalizedProvider::Toml => Some("toml"),
+        NormalizedProvider::Binary { .. } => None,
+    };
+    let mut names = Vec::new();
+    if root.is_dir() {
+        for entry in std::fs::read_dir(&root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                // Skip backup files (e.g. config.json.bak1).
+                if is_backup_filename(name) {
+                    continue;
+                }
+                // Skip temp files.
+                if name.starts_with('.') && name.ends_with(".tmp") {
+                    continue;
+                }
+                match ext {
+                    Some(e) => {
+                        if path.extension().is_some_and(|x| x == e) {
+                            names.push(name.to_string());
                         }
                     }
+                    None => names.push(name.to_string()),
                 }
             }
-            names.sort();
-            Ok(names)
         }
     }
+    names.sort();
+    Ok(names)
 }
 
 /// Resets a config by deleting the existing data and re-creating it with

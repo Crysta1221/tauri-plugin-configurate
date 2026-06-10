@@ -1,11 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::path::BaseDirectory;
 
-use crate::dotpath;
 use crate::error::{Error, Result};
-
-pub const DEFAULT_SQLITE_DB_NAME: &str = "configurate.db";
-pub const DEFAULT_SQLITE_TABLE_NAME: &str = "configurate_configs";
 
 /// Supported provider kinds for the normalized runtime model.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -14,7 +10,6 @@ pub enum ProviderKind {
     Json,
     Yml,
     Binary,
-    Sqlite,
     Toml,
 }
 
@@ -25,8 +20,6 @@ pub struct ProviderPayload {
     pub kind: ProviderKind,
     pub encryption_key: Option<String>,
     pub kdf: Option<KeyDerivation>,
-    pub db_name: Option<String>,
-    pub table_name: Option<String>,
 }
 
 /// Optional path options sent from the guest side.
@@ -64,26 +57,6 @@ pub struct KeyringOptions {
     pub account: String,
 }
 
-/// Value type inferred from `defineConfig` for SQLite column materialization.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SqliteValueType {
-    String,
-    Number,
-    Boolean,
-}
-
-/// Flattened column definition for SQLite persistence.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SqliteColumn {
-    pub column_name: String,
-    pub dotpath: String,
-    pub value_type: SqliteValueType,
-    #[serde(default)]
-    pub is_keyring: bool,
-}
-
 /// Unified payload sent from TypeScript side for create/load/save/delete.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,8 +65,6 @@ pub struct ConfiguratePayload {
     pub base_dir: Option<BaseDirectory>,
     pub options: Option<PathOptions>,
     pub provider: Option<ProviderPayload>,
-    #[serde(default)]
-    pub schema_columns: Vec<SqliteColumn>,
 
     // Common fields
     pub data: Option<serde_json::Value>,
@@ -127,8 +98,7 @@ pub enum KeyDerivation {
 /// Normalized provider used internally after payload normalization.
 ///
 /// Each variant carries only the fields that are meaningful for that provider,
-/// eliminating the spurious `db_name`/`table_name` on non-SQLite providers and
-/// the spurious `encryption_key` on non-Binary providers.
+/// eliminating the spurious `encryption_key` on non-Binary providers.
 #[derive(Clone)]
 pub enum NormalizedProvider {
     Json,
@@ -138,7 +108,6 @@ pub enum NormalizedProvider {
         encryption_key: Option<String>,
         kdf: KeyDerivation,
     },
-    Sqlite { db_name: String, table_name: String },
 }
 
 /// Custom Debug impl that redacts the `encryption_key` so it is never
@@ -157,11 +126,6 @@ impl std::fmt::Debug for NormalizedProvider {
                 )
                 .field("kdf", kdf)
                 .finish(),
-            Self::Sqlite { db_name, table_name } => f
-                .debug_struct("Sqlite")
-                .field("db_name", db_name)
-                .field("table_name", table_name)
-                .finish(),
         }
     }
 }
@@ -174,7 +138,6 @@ pub struct NormalizedConfiguratePayload {
     pub dir_name: Option<String>,
     pub current_path: Option<String>,
     pub provider: NormalizedProvider,
-    pub schema_columns: Vec<SqliteColumn>,
     pub data: Option<serde_json::Value>,
     pub keyring_entries: Option<Vec<KeyringEntry>>,
     pub keyring_options: Option<KeyringOptions>,
@@ -236,28 +199,7 @@ impl ConfiguratePayload {
                 encryption_key: provider_payload.encryption_key,
                 kdf: provider_payload.kdf.unwrap_or(KeyDerivation::Sha256),
             },
-            ProviderKind::Sqlite => NormalizedProvider::Sqlite {
-                db_name: provider_payload
-                    .db_name
-                    .unwrap_or_else(|| DEFAULT_SQLITE_DB_NAME.to_string()),
-                table_name: provider_payload
-                    .table_name
-                    .unwrap_or_else(|| DEFAULT_SQLITE_TABLE_NAME.to_string()),
-            },
         };
-
-        let schema_columns = self.schema_columns;
-
-        // Validate dotpaths early so callers get a clear error referencing the
-        // offending column rather than a cryptic dotpath error at write time.
-        for column in &schema_columns {
-            dotpath::validate_path(&column.dotpath).map_err(|e| {
-                Error::InvalidPayload(format!(
-                    "invalid dotpath in column '{}': {}",
-                    column.column_name, e
-                ))
-            })?;
-        }
 
         Ok(NormalizedConfiguratePayload {
             file_name,
@@ -265,7 +207,6 @@ impl ConfiguratePayload {
             dir_name,
             current_path,
             provider,
-            schema_columns,
             data: self.data,
             keyring_entries: self.keyring_entries,
             keyring_options: self.keyring_options,
@@ -343,7 +284,6 @@ mod tests {
             base_dir: Some(BaseDirectory::AppConfig),
             options: None,
             provider: None,
-            schema_columns: Vec::new(),
             data: None,
             keyring_entries: None,
             keyring_options: None,
@@ -362,8 +302,6 @@ mod tests {
             kind: ProviderKind::Json,
             encryption_key: Some("key".to_string()),
             kdf: None,
-            db_name: None,
-            table_name: None,
         });
 
         let err = payload.normalize().expect_err("expected invalid payload");
@@ -385,8 +323,6 @@ mod tests {
             kind: ProviderKind::Binary,
             encryption_key: Some("my-key".to_string()),
             kdf: None,
-            db_name: None,
-            table_name: None,
         });
 
         let normalized = payload.normalize().expect("expected valid payload");
@@ -406,8 +342,6 @@ mod tests {
             kind: ProviderKind::Json,
             encryption_key: None,
             kdf: None,
-            db_name: None,
-            table_name: None,
         });
         payload.keyring_delete_ids = vec!["tok".to_string()];
 
