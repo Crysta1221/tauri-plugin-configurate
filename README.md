@@ -2,7 +2,7 @@
 
 **Tauri v2 plugin for type-safe application configuration management with OS keyring support.**
 
-Store app settings as JSON, YAML, TOML, Binary, or SQLite — with sensitive values automatically secured in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service).
+Store app settings as JSON, YAML, TOML, or Binary — with sensitive values automatically secured in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service).
 
 ---
 
@@ -14,6 +14,7 @@ Store app settings as JSON, YAML, TOML, Binary, or SQLite — with sensitive val
 > - **Breaking changes may be introduced in any minor version** (e.g. 0.2 → 0.3).
 > - **Bugs may be present.** Please report issues on [GitHub](https://github.com/Crysta1221/tauri-plugin-configurate/issues).
 > - The on-disk format of **`BinaryProvider()` (unencrypted)** changed in v0.2.3 — existing files written by v0.2.2 or earlier must be re-created. Encrypted binary files (`BinaryProvider({ encryptionKey })`) are not affected.
+> - **`SqliteProvider` was removed in v0.5.0.** Migrate SQLite-backed configs to a file-based provider (JSON, YAML, TOML, or Binary) before upgrading.
 >
 > Pin to an exact version in production and review the [release notes](https://github.com/Crysta1221/tauri-plugin-configurate/releases) before upgrading.
 
@@ -25,7 +26,7 @@ Store app settings as JSON, YAML, TOML, Binary, or SQLite — with sensitive val
 | --- | --- |
 | 🛡️ **Type-safe schema** | Define your config shape with `defineConfig()` — TypeScript infers all value types automatically |
 | 🔑 **OS keyring integration** | Mark sensitive fields with `keyring()` — secrets never touch disk |
-| 🧩 **Multiple providers** | Choose JSON, YAML, TOML, Binary (encrypted or plain), or SQLite as the storage backend |
+| 🧩 **Multiple providers** | Choose JSON, YAML, TOML, or Binary (encrypted or plain) as the storage backend |
 | 📄 **Single-file API** | `create` / `load` / `save` / `patch` / `delete` / `exists` / `reset` — consistent builder-style calls |
 | 📦 **Batch API** | `loadAll` / `saveAll` / `patchAll` — load, save, or patch multiple configs in a single IPC round-trip |
 | 🗂️ **Flexible paths** | Control the storage location with `baseDir`, `options.dirName`, and `options.currentPath` |
@@ -238,7 +239,6 @@ import {
   YmlProvider,
   TomlProvider,
   BinaryProvider,
-  SqliteProvider,
 } from "tauri-plugin-configurate-api";
 
 JsonProvider(); // Plain JSON
@@ -247,7 +247,6 @@ TomlProvider(); // TOML
 BinaryProvider({ encryptionKey: "key" }); // Encrypted binary (XChaCha20-Poly1305)
 BinaryProvider({ encryptionKey: "key", kdf: "argon2" }); // Encrypted binary with Argon2id KDF
 BinaryProvider(); // Unencrypted binary
-SqliteProvider({ dbName: "app.db", tableName: "configs" }); // SQLite
 ```
 
 > [!NOTE]
@@ -278,7 +277,7 @@ Up to 3 backup slots are kept per file:
 | `app.json.bak3` | Three writes ago |
 
 > [!NOTE]
-> Backups apply only to file-based providers (JSON, YAML, TOML, Binary). SQLite handles durability internally via WAL mode and is unaffected by this option.
+> Backups apply to all file-based providers (JSON, YAML, TOML, Binary).
 
 ---
 

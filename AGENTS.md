@@ -33,7 +33,6 @@
 - Avoid excessive file fragmentation; consolidate when over-split
 - Preserve storage/keyring ordering in command handlers: write/delete storage first, then apply keyring writes/deletes (`src/commands.rs` `execute_create/save/patch/delete`).
 - Keep validation rules mirrored between TS and Rust (`guest-js/configurate.ts` and `src/commands.rs`): `fileName` must be a single component, `options.dirName/currentPath` must be safe relative segments, and keyring `id` must not include `/` (`guest-js/schema.ts`).
-- `watch_file` is file-provider only; SQLite must stay unsupported in both API and backend (`guest-js/configurate.ts` `watchExternal`, `src/commands.rs` `watch_file`).
 - `configurate://change` payload contract must stay aligned between `src/commands.rs` (`ConfigChangeEvent`, `change_target_id`) and `guest-js/configurate.ts` (`ConfigChangeEvent`, `buildChangeTargetId`).
 
 # Commit Rules
