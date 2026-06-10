@@ -31,16 +31,17 @@ jobs:
             exit 1
           fi
 
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.77.2
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Generate Cargo lockfile
+        run: cargo generate-lockfile
+
       - name: Test
         run: |
-          cargo test
+          cargo test --locked
           bun test guest-js/index.test.ts
 
       - name: Build JavaScript package
