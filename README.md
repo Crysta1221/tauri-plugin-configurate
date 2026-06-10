@@ -18,7 +18,7 @@ _Desktop only. Android and iOS are not supported._
 
 ## Install
 
-_This plugin requires a Rust version of at least **1.77.2**_
+_This plugin requires a Rust version of at least **1.85.0** (see `rust-toolchain.toml`)_
 
 Install the Rust plugin by adding the following to your `Cargo.toml` file:
 
