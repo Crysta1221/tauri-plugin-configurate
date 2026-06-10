@@ -63,7 +63,13 @@ jobs:
         run: bun run build
 
       - name: Publish to crates.io
-        run: cargo publish --locked
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if cargo search tauri-plugin-configurate --limit 1 | grep -q "= \"${VERSION}\""; then
+            echo "tauri-plugin-configurate ${VERSION} is already on crates.io; skipping publish"
+          else
+            cargo publish --locked
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -74,7 +80,15 @@ jobs:
           package-manager-cache: false
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if npm view "tauri-plugin-configurate-api@${VERSION}" version >/dev/null 2>&1; then
+            echo "tauri-plugin-configurate-api ${VERSION} is already on npm; skipping publish"
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Extract changelog for release
         run: |
