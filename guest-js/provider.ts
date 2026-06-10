@@ -76,6 +76,14 @@ export function TomlProvider(): ConfigurateProvider {
   return createProvider({ kind: "toml" });
 }
 
+/**
+ * Encrypted binary file provider (XChaCha20-Poly1305).
+ *
+ * **Key derivation**
+ * - Default (`kdf` omitted): SHA-256 of `encryptionKey` — use only with a
+ *   high-entropy random key (e.g. from the OS keyring), not a user password.
+ * - `kdf: "argon2"`: Argon2id with per-file salt — use for password-based encryption.
+ */
 export function BinaryProvider(opts?: {
   encryptionKey?: string;
   kdf?: KeyDerivation;

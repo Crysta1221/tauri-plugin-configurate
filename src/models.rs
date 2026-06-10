@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use tauri::path::BaseDirectory;
+use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
@@ -105,7 +106,7 @@ pub enum NormalizedProvider {
     Yml,
     Toml,
     Binary {
-        encryption_key: Option<String>,
+        encryption_key: Option<Zeroizing<String>>,
         kdf: KeyDerivation,
     },
 }
@@ -196,7 +197,9 @@ impl ConfiguratePayload {
             ProviderKind::Yml => NormalizedProvider::Yml,
             ProviderKind::Toml => NormalizedProvider::Toml,
             ProviderKind::Binary => NormalizedProvider::Binary {
-                encryption_key: provider_payload.encryption_key,
+                encryption_key: provider_payload
+                    .encryption_key
+                    .map(Zeroizing::new),
                 kdf: provider_payload.kdf.unwrap_or(KeyDerivation::Sha256),
             },
         };
@@ -328,7 +331,7 @@ mod tests {
         let normalized = payload.normalize().expect("expected valid payload");
         match normalized.provider {
             NormalizedProvider::Binary { encryption_key, kdf } => {
-                assert_eq!(encryption_key.as_deref(), Some("my-key"));
+                assert_eq!(encryption_key.as_ref().map(|k| k.as_str()), Some("my-key"));
                 assert!(matches!(kdf, KeyDerivation::Sha256), "expected default kdf to be Sha256");
             }
             _ => panic!("unexpected provider variant"),

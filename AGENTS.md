@@ -25,9 +25,13 @@ When adding or removing a command, keep these in sync:
 - **Storage / keyring order** (`src/commands.rs`): write or delete storage first, then keyring writes/deletes (`execute_create` / `save` / `patch` / `delete`).
 - **Validation parity**: mirror rules between `guest-js/configurate.ts` and `src/commands.rs` (`fileName` single component; safe `dirName` / `currentPath`; keyring `id` must not contain `/`).
 - **Change events**: keep `configurate://change` aligned between `src/commands.rs` (`ConfigChangeEvent`, `change_target_id`) and `guest-js/configurate.ts` (`ConfigChangeEvent`, `buildChangeTargetId`).
-- **Keyring reads**: `keyring_pair` with `KeyringEntryUse::Read` rejects non-empty `value`; writes use `KeyringEntryUse::Write`.
+- **Keyring reads**: `keyring_pair` with `KeyringEntryUse::Read` rejects non-empty `value`; writes use `KeyringEntryUse::Write`. Keyring unlock goes only through the `unlock` command — `load` rejects `withUnlock` + keyring fields.
+- **Dotpath limits** (`src/dotpath.rs`): max 64 segments, array index ≤ 10,000.
+- **Batch limit**: max 128 entries per `*_all` command.
 - **Read size limit**: default `DEFAULT_MAX_READ_BYTES` (16 MiB) in `src/config.rs`; override via `Builder::max_read_bytes` or `tauri.conf.json` → `plugins.configurate.maxReadBytes`.
-- **Binary `encryptionKey`**: include in IPC only when the operation reads/writes encrypted data (`guest-js/configurate.ts` `_serializeProvider`).
+- **Binary `encryptionKey`**: include in IPC only when the operation reads/writes encrypted data (`guest-js/configurate.ts` `_serializeProvider`). SHA-256 KDF is for high-entropy keys; document Argon2 for passwords (`guest-js/provider.ts`).
+- **`BaseDirectory` allowlist**: default app-scoped dirs only (`src/config.rs`); validate in `resolve_root`. Opt out via `Builder::allow_any_base_directory`.
+- **Keyring inline values**: always `Value::String` — no JSON auto-parse (`keyring_secret_as_value`).
 
 ## Releases
 

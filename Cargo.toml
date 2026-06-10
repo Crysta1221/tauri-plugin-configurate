@@ -32,6 +32,7 @@ argon2 = "0.5"
 toml = "0.8"
 notify-debouncer-mini = "0.4"
 zeroize = "1.8"
+tempfile = "3"
 
 [build-dependencies]
 tauri-plugin = { version = "2.5.4", features = ["build"] }

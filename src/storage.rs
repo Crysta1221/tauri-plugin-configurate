@@ -3,9 +3,8 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand::{Rng, RngExt};
+use rand::Rng;
 use zeroize::Zeroizing;
 
 use serde_json::Value;
@@ -57,20 +56,31 @@ const BACKUP_COUNT: u32 = 3;
 /// Reads at most `max_bytes` from `path`, rejecting larger files before loading
 /// them into memory.
 pub fn read_file_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
-    let meta = std::fs::metadata(path)?;
-    if meta.len() as usize > max_bytes {
+    let max_bytes = u64::try_from(max_bytes).map_err(|_| {
+        Error::InvalidPayload(format!(
+            "max read size {} exceeds addressable limit",
+            max_bytes
+        ))
+    })?;
+
+    let file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if len > max_bytes {
         return Err(Error::InvalidPayload(format!(
             "file exceeds maximum size of {} bytes",
             max_bytes
         )));
     }
 
-    let file = std::fs::File::open(path)?;
+    let read_limit = max_bytes.checked_add(1).ok_or_else(|| {
+        Error::InvalidPayload("max read size overflow".to_string())
+    })?;
+
     let mut bytes = Vec::new();
-    file.take(max_bytes as u64 + 1)
+    file.take(read_limit)
         .read_to_end(&mut bytes)
         .map_err(Error::from)?;
-    if bytes.len() > max_bytes {
+    if bytes.len() as u64 > max_bytes {
         return Err(Error::InvalidPayload(format!(
             "file exceeds maximum size of {} bytes",
             max_bytes
@@ -130,48 +140,24 @@ fn create_backup(path: &Path, registry: &BackupRegistry) {
 fn write_file_safely(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Storage(format!("invalid file path: {}", path.display())))?;
+    std::fs::create_dir_all(parent)?;
 
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| Error::Storage(format!("invalid file path: {}", path.display())))?
-        .to_string_lossy();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| Error::Storage(format!("system time error: {}", e)))?
-        .as_nanos();
-    // Include a random 32-bit suffix to avoid collisions on systems where the
-    // clock resolution is coarser than nanoseconds or when multiple threads
-    // write the same file concurrently.
-    let random_suffix: u32 = rand::rng().random();
-    let tmp_name = format!(".{}.{}-{}.tmp", file_name, nanos, random_suffix);
-    let tmp_path = path.with_file_name(tmp_name);
-
-    {
-        let mut tmp = std::fs::File::create(&tmp_path)?;
-        tmp.write_all(bytes)?;
-        tmp.sync_all()?;
-    }
-
-    if let Err(rename_err) = std::fs::rename(&tmp_path, path) {
-        // On Windows, `rename` fails when the destination already exists.
-        // Attempt to delete the destination and retry once.
-        // If the retry also fails, report the error but do NOT delete the
-        // temporary file — it holds the newly-written data and leaving it
-        // around is safer than silently discarding it.
-        if path.exists() {
-            std::fs::remove_file(path)?;
-            // On second failure, return the error; tmp file is preserved.
-            std::fs::rename(&tmp_path, path)?;
-        } else {
-            // Destination doesn't exist; rename failed for another reason.
-            // Preserve the tmp file (don't delete) and surface the error.
-            return Err(rename_err.into());
-        }
-    }
-
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| Error::Storage(format!("failed to create temp file: {}", e)))?;
+    tmp.write_all(bytes)?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| Error::Storage(format!("failed to sync temp file: {}", e)))?;
+    tmp.persist(path).map_err(|e| {
+        Error::Storage(format!(
+            "failed to replace '{}': {}",
+            path.display(),
+            e.error
+        ))
+    })?;
     Ok(())
 }
 
@@ -586,7 +572,7 @@ pub fn file_backend_for(
         NormalizedProvider::Binary {
             encryption_key,
             kdf,
-        } => match encryption_key.as_deref() {
+        } => match encryption_key.as_ref().map(|key| key.as_str()) {
             Some(key) => match kdf {
                 KeyDerivation::Argon2 => Ok(Box::new(BinaryArgon2Backend::new(
                     key,

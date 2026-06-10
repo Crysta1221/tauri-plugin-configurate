@@ -109,6 +109,7 @@ fn resolve_root<R: Runtime>(
     dir_name: Option<&str>,
     current_path: Option<&str>,
 ) -> Result<PathBuf> {
+    config::validate_base_directory(app, base_dir)?;
     if let Some(d) = dir_name {
         validate_dir_name(d)?;
     }
@@ -160,7 +161,7 @@ fn resolve_file_path<R: Runtime>(
 }
 
 fn keyring_secret_as_value(secret: String) -> Value {
-    serde_json::from_str(&secret).unwrap_or(Value::String(secret))
+    Value::String(secret)
 }
 
 /// Reads keyring entries and inlines the plaintext values back into `data`
@@ -383,21 +384,8 @@ fn execute_load<R: Runtime>(
     app: &AppHandle<R>,
     payload: NormalizedConfiguratePayload,
 ) -> Result<Value> {
-    let mut data = load_plain_data(app, &payload)?;
-
-    if payload.with_unlock {
-        if let Some((entries, opts)) =
-            keyring_pair(
-                "load",
-                KeyringEntryUse::Read,
-                &payload.keyring_entries,
-                &payload.keyring_options,
-            )?
-        {
-            apply_keyring_reads(&mut data, entries, opts)?;
-        }
-    }
-
+    validate_load_keyring_policy(&payload)?;
+    let data = load_plain_data(app, &payload)?;
     Ok(data)
 }
 
@@ -503,11 +491,34 @@ fn to_batch_error_value(error: &Error) -> Value {
     })
 }
 
+/// Maximum number of entries allowed in a single batch command.
+const MAX_BATCH_ENTRIES: usize = 128;
+
+/// Rejects `load` payloads that try to read the keyring via `withUnlock`.
+/// Keyring access must go through the `unlock` command (`allow-unlock`).
+fn validate_load_keyring_policy(payload: &NormalizedConfiguratePayload) -> Result<()> {
+    if payload.with_unlock
+        && (payload.keyring_entries.is_some() || payload.keyring_options.is_some())
+    {
+        return Err(Error::InvalidPayload(
+            "load with withUnlock cannot access the keyring; use the unlock command instead"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_batch_ids(payload: &BatchPayload) -> Result<()> {
     if payload.entries.is_empty() {
         return Err(Error::InvalidPayload(
             "batch payload requires at least one entry".to_string(),
         ));
+    }
+    if payload.entries.len() > MAX_BATCH_ENTRIES {
+        return Err(Error::InvalidPayload(format!(
+            "batch payload exceeds maximum of {} entries",
+            MAX_BATCH_ENTRIES
+        )));
     }
 
     let mut seen = BTreeSet::new();
@@ -1211,6 +1222,40 @@ mod tests {
         }))
         .unwrap();
         assert!(validate_batch_ids(&payload).is_err());
+    }
+
+    #[test]
+    fn batch_over_limit_is_rejected() {
+        let entries: Vec<Value> = (0..129)
+            .map(|i| {
+                json!({
+                    "id": format!("id{}", i),
+                    "payload": {
+                        "fileName": "a.json",
+                        "baseDir": 8,
+                        "provider": { "kind": "json" }
+                    }
+                })
+            })
+            .collect();
+        let payload: BatchPayload = serde_json::from_value(json!({ "entries": entries })).unwrap();
+        assert!(validate_batch_ids(&payload).is_err());
+    }
+
+    #[test]
+    fn load_with_unlock_and_keyring_is_rejected() {
+        let payload: ConfiguratePayload = serde_json::from_value(json!({
+            "fileName": "app.json",
+            "baseDir": 8,
+            "provider": { "kind": "json" },
+            "withUnlock": true,
+            "keyringEntries": [{ "id": "tok", "dotpath": "token", "value": "" }],
+            "keyringOptions": { "service": "svc", "account": "acc" }
+        }))
+        .unwrap();
+        let normalized = payload.normalize().unwrap();
+        let err = validate_load_keyring_policy(&normalized).unwrap_err();
+        assert!(err.to_string().contains("unlock command"));
     }
 
     // ── is_backup_filename ───────────────────────────────────────────────────

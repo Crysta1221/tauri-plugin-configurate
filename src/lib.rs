@@ -20,7 +20,9 @@ mod models;
 mod storage;
 mod watcher;
 
-pub use config::{Builder, PluginConfig, PluginSettings, DEFAULT_MAX_READ_BYTES};
+pub use config::{
+    BaseDirPolicy, Builder, PluginConfig, PluginSettings, DEFAULT_MAX_READ_BYTES,
+};
 pub use error::{Error, Result};
 
 #[cfg(desktop)]

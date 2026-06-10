@@ -1369,7 +1369,13 @@ export class Configurate<S extends SchemaObject> {
     returnData = true,
   ): Record<string, unknown> {
     const base: Record<string, unknown> = {
-      ...this._buildBasePayload({ includeEncryptionKey: op !== "exists" }),
+      ...this._buildBasePayload({
+        includeEncryptionKey:
+          op === "load" ||
+          op === "create" ||
+          op === "save" ||
+          op === "patch",
+      }),
       withUnlock,
       returnData,
     };
@@ -1469,11 +1475,18 @@ export interface DiffEntry {
  * // ]
  * ```
  */
+const MAX_DIFF_DEPTH = 64;
+
 export function configDiff(
   oldData: Record<string, unknown>,
   newData: Record<string, unknown>,
   prefix = "",
+  depth = 0,
 ): DiffEntry[] {
+  if (depth > MAX_DIFF_DEPTH) {
+    throw new Error("configDiff: maximum nesting depth exceeded");
+  }
+
   const entries: DiffEntry[] = [];
 
   const allKeys = new Set([
@@ -1504,9 +1517,10 @@ export function configDiff(
           oldVal as Record<string, unknown>,
           newVal as Record<string, unknown>,
           path,
+          depth + 1,
         ),
       );
-    } else if (!deepEqual(oldVal, newVal)) {
+    } else if (!deepEqual(oldVal, newVal, depth + 1)) {
       entries.push({ path, type: "changed", oldValue: oldVal, newValue: newVal });
     }
   }
@@ -1514,14 +1528,17 @@ export function configDiff(
   return entries;
 }
 
-function deepEqual(a: unknown, b: unknown): boolean {
+function deepEqual(a: unknown, b: unknown, depth = 0): boolean {
+  if (depth > MAX_DIFF_DEPTH) {
+    throw new Error("configDiff: maximum nesting depth exceeded");
+  }
   if (a === b) return true;
   if (a === null || b === null) return false;
   if (typeof a !== typeof b) return false;
 
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
-    return a.every((val, idx) => deepEqual(val, b[idx]));
+    return a.every((val, idx) => deepEqual(val, b[idx], depth + 1));
   }
 
   if (isPlainObject(a) && isPlainObject(b)) {
@@ -1529,7 +1546,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
     const bObj = b as Record<string, unknown>;
     const keys = new Set([...Object.keys(aObj), ...Object.keys(bObj)]);
     for (const key of keys) {
-      if (!deepEqual(aObj[key], bObj[key])) return false;
+      if (!deepEqual(aObj[key], bObj[key], depth + 1)) return false;
     }
     return true;
   }

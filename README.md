@@ -144,9 +144,31 @@ JsonProvider();
 YmlProvider();
 TomlProvider();
 BinaryProvider();
-BinaryProvider({ encryptionKey: "key" });
-BinaryProvider({ encryptionKey: "key", kdf: "argon2" });
+BinaryProvider({ encryptionKey: "key" }); // high-entropy key only (SHA-256 KDF)
+BinaryProvider({ encryptionKey: "key", kdf: "argon2" }); // password-based
 ```
+
+Use `kdf: "argon2"` when `encryptionKey` is a user password. The default SHA-256 derivation is for random/high-entropy keys only (no salt, no stretching).
+
+## Security notes
+
+- **Base directories:** By default, IPC payloads may only use app-scoped `BaseDirectory` values (`AppConfig`, `AppData`, `AppLocalData`, `AppCache`, `AppLog`, `Resource`, `Temp`). To allow `Home`, `Desktop`, etc., configure the Rust builder:
+
+```rust
+.use(
+    tauri_plugin_configurate::Builder::default()
+        .allowed_base_directories([
+            tauri::path::BaseDirectory::AppConfig,
+            tauri::path::BaseDirectory::Document,
+        ])
+        .build(),
+)
+// Or: .allow_any_base_directory() to disable the restriction
+```
+
+- **Encryption key over IPC:** Binary `encryptionKey` is sent over Tauri IPC only when needed (load/create/save/patch). It never crosses the network; restrict devtools in production builds if concerned.
+- **YAML imports:** Untrusted YAML can expand via anchors/aliases. Only import config from trusted sources, or prefer JSON/TOML for untrusted input.
+- **File writes:** Atomic replace uses `tempfile` (`persist`) including on Windows. External processes writing the same path concurrently are still outside the plugin's advisory lock scope.
 
 ## License
 
