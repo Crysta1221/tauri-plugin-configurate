@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{command, path::BaseDirectory, AppHandle, Emitter, Manager, Runtime};
 
+use crate::config;
 use crate::dotpath;
 use crate::error::{Error, Result};
 use crate::keyring_store;
@@ -158,6 +159,10 @@ fn resolve_file_path<R: Runtime>(
     Ok(root.join(&payload.file_name))
 }
 
+fn keyring_secret_as_value(secret: String) -> Value {
+    serde_json::from_str(&secret).unwrap_or(Value::String(secret))
+}
+
 /// Reads keyring entries and inlines the plaintext values back into `data`
 /// at the correct dotpath location.
 fn apply_keyring_reads(
@@ -166,25 +171,49 @@ fn apply_keyring_reads(
     opts: &KeyringOptions,
 ) -> Result<()> {
     for entry in entries {
-        if entry.is_optional {
-            // Optional field: treat "not found" as absent (null), not an error.
+        let val = if entry.is_optional {
             match keyring_store::get_optional(opts, &entry.id)? {
-                Some(secret) => {
-                    let val: Value =
-                        serde_json::from_str(&secret).unwrap_or(Value::String(secret));
-                    dotpath::set(data, &entry.dotpath, val)?;
-                }
-                None => {
-                    // Entry absent from keyring — explicitly set null so stale plaintext is cleared.
-                    dotpath::set(data, &entry.dotpath, Value::Null)?;
-                }
+                Some(secret) => keyring_secret_as_value(secret),
+                None => Value::Null,
             }
         } else {
-            let secret = keyring_store::get(opts, &entry.id)?;
-            // The stored value might itself be a JSON object (for nested keyring fields).
-            let val: Value = serde_json::from_str(&secret).unwrap_or(Value::String(secret));
-            dotpath::set(data, &entry.dotpath, val)?;
+            keyring_secret_as_value(keyring_store::get(opts, &entry.id)?)
+        };
+        dotpath::set(data, &entry.dotpath, val)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum KeyringEntryUse {
+    Read,
+    Write,
+}
+
+fn validate_keyring_entries(entries: &[KeyringEntry], use_: KeyringEntryUse) -> Result<()> {
+    for entry in entries {
+        keyring_store::validate_entry_id(&entry.id)?;
+        dotpath::validate_path(&entry.dotpath)?;
+        if matches!(use_, KeyringEntryUse::Read) && !entry.value.is_empty() {
+            return Err(Error::InvalidPayload(format!(
+                "keyring entry '{}' must not include a value on read operations",
+                entry.id
+            )));
         }
+    }
+    Ok(())
+}
+
+fn validate_keyring_delete_ids(ids: &[String]) -> Result<()> {
+    for id in ids {
+        keyring_store::validate_entry_id(id)?;
+    }
+    Ok(())
+}
+
+fn write_keyring_entries(opts: &KeyringOptions, entries: &[KeyringEntry]) -> Result<()> {
+    for entry in entries {
+        keyring_store::set(opts, &entry.id, &entry.value)?;
     }
     Ok(())
 }
@@ -196,6 +225,7 @@ fn cleanup_stale_keyring_entries(
     if delete_ids.is_empty() {
         return Ok(());
     }
+    validate_keyring_delete_ids(delete_ids)?;
 
     let opts = opts.ok_or_else(|| {
         Error::InvalidPayload("keyringDeleteIds provided without keyringOptions".to_string())
@@ -230,11 +260,15 @@ fn cleanup_stale_keyring_entries(
 /// both be omitted.
 fn keyring_pair<'a>(
     op: &str,
+    use_: KeyringEntryUse,
     keyring_entries: &'a Option<Vec<KeyringEntry>>,
     keyring_options: &'a Option<KeyringOptions>,
 ) -> Result<Option<(&'a [KeyringEntry], &'a KeyringOptions)>> {
     match (keyring_entries.as_deref(), keyring_options.as_ref()) {
-        (Some(entries), Some(opts)) => Ok(Some((entries, opts))),
+        (Some(entries), Some(opts)) => {
+            validate_keyring_entries(entries, use_)?;
+            Ok(Some((entries, opts)))
+        }
         (None, None) => Ok(None),
         (Some(_), None) => Err(Error::InvalidPayload(format!(
             "invalid '{}' payload: keyringEntries provided without keyringOptions",
@@ -251,10 +285,12 @@ fn load_plain_data<R: Runtime>(
     app: &AppHandle<R>,
     payload: &NormalizedConfiguratePayload,
 ) -> Result<Value> {
+    let max_read_bytes = config::max_read_bytes(app);
     let backend = storage::file_backend_for(
         &payload.provider,
         false,
-        Arc::new(storage::BackupRegistry::new()),
+        storage::read_only_registry(),
+        max_read_bytes,
     )?;
     let path = resolve_file_path(app, payload)?;
     backend.read(&path)
@@ -269,7 +305,13 @@ fn save_plain_data<R: Runtime>(
         .try_state::<Arc<storage::BackupRegistry>>()
         .map(|s| Arc::clone(s.inner()))
         .unwrap_or_else(|| Arc::new(storage::BackupRegistry::new()));
-    let backend = storage::file_backend_for(&payload.provider, payload.backup, registry)?;
+    let max_read_bytes = config::max_read_bytes(app);
+    let backend = storage::file_backend_for(
+        &payload.provider,
+        payload.backup,
+        registry,
+        max_read_bytes,
+    )?;
     let path = resolve_file_path(app, payload)?;
     backend.write(&path, data)
 }
@@ -304,7 +346,12 @@ fn execute_create<R: Runtime>(
         None
     };
 
-    let keyring = keyring_pair("create", &payload.keyring_entries, &payload.keyring_options)?;
+    let keyring = keyring_pair(
+        "create",
+        KeyringEntryUse::Write,
+        &payload.keyring_entries,
+        &payload.keyring_options,
+    )?;
 
     // Nullify secrets in the on-disk data before saving.
     if let Some((entries, _opts)) = &keyring {
@@ -318,9 +365,7 @@ fn execute_create<R: Runtime>(
 
     // Only write secrets to the OS keyring after successful storage write.
     if let Some((entries, opts)) = keyring {
-        for entry in entries {
-            keyring_store::set(opts, &entry.id, &entry.value)?;
-        }
+        write_keyring_entries(opts, entries)?;
     }
 
     cleanup_stale_keyring_entries(
@@ -342,7 +387,12 @@ fn execute_load<R: Runtime>(
 
     if payload.with_unlock {
         if let Some((entries, opts)) =
-            keyring_pair("load", &payload.keyring_entries, &payload.keyring_options)?
+            keyring_pair(
+                "load",
+                KeyringEntryUse::Read,
+                &payload.keyring_entries,
+                &payload.keyring_options,
+            )?
         {
             apply_keyring_reads(&mut data, entries, opts)?;
         }
@@ -366,7 +416,12 @@ fn execute_save<R: Runtime>(
         None
     };
 
-    let keyring = keyring_pair("save", &payload.keyring_entries, &payload.keyring_options)?;
+    let keyring = keyring_pair(
+        "save",
+        KeyringEntryUse::Write,
+        &payload.keyring_entries,
+        &payload.keyring_options,
+    )?;
 
     // Nullify secrets in the on-disk data before saving.
     if let Some((entries, _opts)) = &keyring {
@@ -380,9 +435,7 @@ fn execute_save<R: Runtime>(
 
     // Only write secrets to the OS keyring after successful storage write.
     if let Some((entries, opts)) = keyring {
-        for entry in entries {
-            keyring_store::set(opts, &entry.id, &entry.value)?;
-        }
+        write_keyring_entries(opts, entries)?;
     }
 
     cleanup_stale_keyring_entries(
@@ -407,7 +460,12 @@ fn execute_delete<R: Runtime>(
     delete_plain_data(app, &payload)?;
 
     if let Some((entries, opts)) =
-        keyring_pair("delete", &payload.keyring_entries, &payload.keyring_options)?
+        keyring_pair(
+            "delete",
+            KeyringEntryUse::Read,
+            &payload.keyring_entries,
+            &payload.keyring_options,
+        )?
     {
         let mut failures: Vec<String> = Vec::new();
         for entry in entries {
@@ -702,7 +760,12 @@ fn execute_patch<R: Runtime>(
         None
     };
 
-    let keyring = keyring_pair("patch", &payload.keyring_entries, &payload.keyring_options)?;
+    let keyring = keyring_pair(
+        "patch",
+        KeyringEntryUse::Write,
+        &payload.keyring_entries,
+        &payload.keyring_options,
+    )?;
 
     // Nullify secrets in the on-disk data before saving.
     if let Some((entries, _opts)) = &keyring {
@@ -716,9 +779,7 @@ fn execute_patch<R: Runtime>(
 
     // Only write secrets to the OS keyring after successful storage write.
     if let Some((entries, opts)) = keyring {
-        for entry in entries {
-            keyring_store::set(opts, &entry.id, &entry.value)?;
-        }
+        write_keyring_entries(opts, entries)?;
     }
 
     cleanup_stale_keyring_entries(
@@ -754,7 +815,12 @@ pub(crate) async fn patch<R: Runtime>(
 pub(crate) async fn unlock(payload: UnlockPayload) -> Result<Value> {
     let mut data = payload.data;
     if let Some((entries, opts)) =
-        keyring_pair("unlock", &payload.keyring_entries, &payload.keyring_options)?
+        keyring_pair(
+            "unlock",
+            KeyringEntryUse::Read,
+            &payload.keyring_entries,
+            &payload.keyring_options,
+        )?
     {
         apply_keyring_reads(&mut data, entries, opts)?;
     }
@@ -960,7 +1026,14 @@ pub struct ImportPayload {
     pub parse_only: bool,
 }
 
-fn parse_import_content(format: &str, content: &str) -> Result<Value> {
+fn parse_import_content(format: &str, content: &str, max_read_bytes: usize) -> Result<Value> {
+    if content.len() > max_read_bytes {
+        return Err(Error::InvalidPayload(format!(
+            "import content exceeds maximum size of {} bytes",
+            max_read_bytes
+        )));
+    }
+
     match format {
         "json" => serde_json::from_str(content).map_err(|e| Error::Storage(e.to_string())),
         "yml" | "yaml" => {
@@ -1003,7 +1076,7 @@ pub(crate) async fn import_config<R: Runtime>(
             let raw = content
                 .as_deref()
                 .ok_or_else(|| Error::InvalidPayload("missing content".to_string()))?;
-            parse_import_content(format, raw)?
+            parse_import_content(format, raw, config::max_read_bytes(&app))?
         }
     };
 
@@ -1216,5 +1289,36 @@ mod tests {
     fn list_configs_filter_does_not_exclude_bakery_name() {
         // Ensures "my.bakery.json" is NOT mistakenly treated as a backup file.
         assert!(!is_backup_filename("my.bakery.json"));
+    }
+
+    #[test]
+    fn keyring_read_rejects_non_empty_value() {
+        let entries = vec![KeyringEntry {
+            id: "api-key".to_string(),
+            dotpath: "apiKey".to_string(),
+            value: "secret".to_string(),
+            is_optional: false,
+        }];
+        assert!(validate_keyring_entries(&entries, KeyringEntryUse::Read).is_err());
+        assert!(validate_keyring_entries(&entries, KeyringEntryUse::Write).is_ok());
+    }
+
+    #[test]
+    fn keyring_read_rejects_invalid_dotpath() {
+        let entries = vec![KeyringEntry {
+            id: "api-key".to_string(),
+            dotpath: ".apiKey".to_string(),
+            value: String::new(),
+            is_optional: false,
+        }];
+        assert!(validate_keyring_entries(&entries, KeyringEntryUse::Read).is_err());
+    }
+
+    #[test]
+    fn import_content_over_limit_is_rejected() {
+        let max_read_bytes = config::DEFAULT_MAX_READ_BYTES;
+        let content = "x".repeat(max_read_bytes + 1);
+        let err = parse_import_content("json", &content, max_read_bytes).unwrap_err();
+        assert!(err.to_string().contains("maximum size"));
     }
 }

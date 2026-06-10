@@ -487,10 +487,10 @@
           "markdownDescription": "Denies the watch_file command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-patch`\n- `allow-delete`\n- `allow-exists`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-patch-all`\n- `allow-unlock`\n- `allow-watch-file`\n- `allow-unwatch-file`\n- `allow-list-configs`\n- `allow-reset`\n- `allow-export-config`\n- `allow-import-config`",
+          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-patch`\n- `allow-delete`\n- `allow-exists`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-patch-all`\n- `allow-watch-file`\n- `allow-unwatch-file`\n- `allow-list-configs`\n- `allow-reset`\n- `allow-export-config`\n- `allow-import-config`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-patch`\n- `allow-delete`\n- `allow-exists`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-patch-all`\n- `allow-unlock`\n- `allow-watch-file`\n- `allow-unwatch-file`\n- `allow-list-configs`\n- `allow-reset`\n- `allow-export-config`\n- `allow-import-config`"
+          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-create`\n- `allow-load`\n- `allow-save`\n- `allow-patch`\n- `allow-delete`\n- `allow-exists`\n- `allow-load-all`\n- `allow-save-all`\n- `allow-patch-all`\n- `allow-watch-file`\n- `allow-unwatch-file`\n- `allow-list-configs`\n- `allow-reset`\n- `allow-export-config`\n- `allow-import-config`"
         }
       ]
     }

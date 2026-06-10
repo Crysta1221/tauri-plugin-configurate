@@ -1,7 +1,8 @@
 ﻿/// Storage backend trait and concrete implementations for JSON, YAML, Binary, and EncryptedBinary.
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::{Rng, RngExt};
@@ -52,6 +53,39 @@ impl BackupRegistry {
 
 /// Maximum number of rolling backup files to keep per config file.
 const BACKUP_COUNT: u32 = 3;
+
+/// Reads at most `max_bytes` from `path`, rejecting larger files before loading
+/// them into memory.
+pub fn read_file_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
+    let meta = std::fs::metadata(path)?;
+    if meta.len() as usize > max_bytes {
+        return Err(Error::InvalidPayload(format!(
+            "file exceeds maximum size of {} bytes",
+            max_bytes
+        )));
+    }
+
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(Error::from)?;
+    if bytes.len() > max_bytes {
+        return Err(Error::InvalidPayload(format!(
+            "file exceeds maximum size of {} bytes",
+            max_bytes
+        )));
+    }
+    Ok(bytes)
+}
+
+/// Shared empty registry for read-only backend construction.
+pub fn read_only_registry() -> Arc<BackupRegistry> {
+    static REGISTRY: OnceLock<Arc<BackupRegistry>> = OnceLock::new();
+    REGISTRY
+        .get_or_init(|| Arc::new(BackupRegistry::new()))
+        .clone()
+}
 
 /// Creates a rolling backup of the file at `path` (up to `BACKUP_COUNT` copies)
 /// and registers the path in `registry` so backups can be cleaned up on exit.
@@ -154,11 +188,12 @@ pub trait StorageBackend {
 pub struct JsonBackend {
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl StorageBackend for JsonBackend {
     fn read(&self, path: &Path) -> Result<Value> {
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         let value = serde_json::from_slice(&bytes)?;
         Ok(value)
     }
@@ -176,11 +211,12 @@ impl StorageBackend for JsonBackend {
 pub struct YamlBackend {
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl StorageBackend for YamlBackend {
     fn read(&self, path: &Path) -> Result<Value> {
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         let yaml_val: serde_yml::Value =
             serde_yml::from_slice(&bytes).map_err(|e| Error::Storage(e.to_string()))?;
         // Direct conversion via serde avoids an intermediate JSON string round-trip.
@@ -211,11 +247,12 @@ impl StorageBackend for YamlBackend {
 pub struct BinaryBackend {
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl StorageBackend for BinaryBackend {
     fn read(&self, path: &Path) -> Result<Value> {
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         let value: Value =
             serde_json::from_slice(&bytes).map_err(|e| Error::Storage(e.to_string()))?;
         Ok(value)
@@ -243,11 +280,17 @@ pub struct BinaryEncryptedBackend {
     key: Zeroizing<[u8; 32]>,
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl BinaryEncryptedBackend {
     /// Creates a new backend deriving the cipher key via `SHA-256(key_str)`.
-    pub fn new(key_str: &str, backup: bool, registry: Arc<BackupRegistry>) -> Self {
+    pub fn new(
+        key_str: &str,
+        backup: bool,
+        registry: Arc<BackupRegistry>,
+        max_read_bytes: usize,
+    ) -> Self {
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(key_str.as_bytes());
         let mut key = [0u8; 32];
@@ -256,6 +299,7 @@ impl BinaryEncryptedBackend {
             key: Zeroizing::new(key),
             backup,
             registry,
+            max_read_bytes,
         }
     }
 }
@@ -265,7 +309,7 @@ impl StorageBackend for BinaryEncryptedBackend {
         use chacha20poly1305::aead::{Aead, KeyInit};
         use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         if bytes.len() < 24 {
             return Err(Error::Storage(
                 "encrypted file is too short (missing nonce)".to_string(),
@@ -325,14 +369,21 @@ pub struct BinaryArgon2Backend {
     password: Zeroizing<String>,
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl BinaryArgon2Backend {
-    pub fn new(password: &str, backup: bool, registry: Arc<BackupRegistry>) -> Self {
+    pub fn new(
+        password: &str,
+        backup: bool,
+        registry: Arc<BackupRegistry>,
+        max_read_bytes: usize,
+    ) -> Self {
         Self {
             password: Zeroizing::new(password.to_string()),
             backup,
             registry,
+            max_read_bytes,
         }
     }
 
@@ -353,7 +404,7 @@ impl StorageBackend for BinaryArgon2Backend {
         use chacha20poly1305::aead::{Aead, KeyInit};
         use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         // 16 salt + 24 nonce + at least 16 tag = 56 minimum
         if bytes.len() < 56 {
             return Err(Error::Storage(
@@ -477,11 +528,12 @@ fn json_to_toml_value(value: &Value) -> Result<toml::Value> {
 pub struct TomlBackend {
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl StorageBackend for TomlBackend {
     fn read(&self, path: &Path) -> Result<Value> {
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         let text = String::from_utf8(bytes)
             .map_err(|e| Error::Storage(format!("TOML file is not valid UTF-8: {}", e)))?;
         let toml_val: toml::Value =
@@ -512,21 +564,48 @@ pub fn file_backend_for(
     provider: &NormalizedProvider,
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 ) -> Result<Box<dyn StorageBackend>> {
     use crate::models::KeyDerivation;
     match provider {
-        NormalizedProvider::Json => Ok(Box::new(JsonBackend { backup, registry })),
-        NormalizedProvider::Yml => Ok(Box::new(YamlBackend { backup, registry })),
-        NormalizedProvider::Toml => Ok(Box::new(TomlBackend { backup, registry })),
+        NormalizedProvider::Json => Ok(Box::new(JsonBackend {
+            backup,
+            registry,
+            max_read_bytes,
+        })),
+        NormalizedProvider::Yml => Ok(Box::new(YamlBackend {
+            backup,
+            registry,
+            max_read_bytes,
+        })),
+        NormalizedProvider::Toml => Ok(Box::new(TomlBackend {
+            backup,
+            registry,
+            max_read_bytes,
+        })),
         NormalizedProvider::Binary {
             encryption_key,
             kdf,
         } => match encryption_key.as_deref() {
             Some(key) => match kdf {
-                KeyDerivation::Argon2 => Ok(Box::new(BinaryArgon2Backend::new(key, backup, registry))),
-                KeyDerivation::Sha256 => Ok(Box::new(BinaryEncryptedBackend::new(key, backup, registry))),
+                KeyDerivation::Argon2 => Ok(Box::new(BinaryArgon2Backend::new(
+                    key,
+                    backup,
+                    registry,
+                    max_read_bytes,
+                ))),
+                KeyDerivation::Sha256 => Ok(Box::new(BinaryEncryptedBackend::new(
+                    key,
+                    backup,
+                    registry,
+                    max_read_bytes,
+                ))),
             },
-            None => Ok(Box::new(BinaryBackend { backup, registry })),
+            None => Ok(Box::new(BinaryBackend {
+                backup,
+                registry,
+                max_read_bytes,
+            })),
         },
     }
 }
@@ -539,6 +618,7 @@ pub fn json_to_toml(value: &Value) -> Result<toml::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_MAX_READ_BYTES;
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -550,11 +630,19 @@ mod tests {
         Arc::new(BackupRegistry::new())
     }
 
+    fn max_read() -> usize {
+        DEFAULT_MAX_READ_BYTES
+    }
+
     #[test]
     fn json_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.json");
-        let backend = JsonBackend { backup: false, registry: reg() };
+        let backend = JsonBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({"key": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -565,7 +653,11 @@ mod tests {
     fn yaml_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.yaml");
-        let backend = YamlBackend { backup: false, registry: reg() };
+        let backend = YamlBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({"key": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -576,7 +668,11 @@ mod tests {
     fn toml_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.toml");
-        let backend = TomlBackend { backup: false, registry: reg() };
+        let backend = TomlBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({
             "key": "value",
             "nested": {"enabled": true},
@@ -591,7 +687,11 @@ mod tests {
     fn toml_array_null_is_rejected() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test-null.toml");
-        let backend = TomlBackend { backup: false, registry: reg() };
+        let backend = TomlBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({"items": [1, null, 2]});
 
         let err = backend.write(&path, &data).unwrap_err();
@@ -605,7 +705,11 @@ mod tests {
     fn binary_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.bin");
-        let backend = BinaryBackend { backup: false, registry: reg() };
+        let backend = BinaryBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({"key": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -616,7 +720,7 @@ mod tests {
     fn encrypted_binary_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.binc");
-        let backend = BinaryEncryptedBackend::new("my-test-key", false, reg());
+        let backend = BinaryEncryptedBackend::new("my-test-key", false, reg(), max_read());
         let data = json!({"secret": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -627,7 +731,7 @@ mod tests {
     fn argon2_encrypted_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.argon2.bin");
-        let backend = BinaryArgon2Backend::new("my-strong-password", false, reg());
+        let backend = BinaryArgon2Backend::new("my-strong-password", false, reg(), max_read());
         let data = json!({"secret": "argon2-protected", "count": 99});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -638,11 +742,11 @@ mod tests {
     fn argon2_wrong_key_fails() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.argon2-bad.bin");
-        let backend = BinaryArgon2Backend::new("correct-password", false, reg());
+        let backend = BinaryArgon2Backend::new("correct-password", false, reg(), max_read());
         let data = json!({"secret": "value"});
         backend.write(&path, &data).unwrap();
 
-        let wrong_backend = BinaryArgon2Backend::new("wrong-password", false, reg());
+        let wrong_backend = BinaryArgon2Backend::new("wrong-password", false, reg(), max_read());
         assert!(wrong_backend.read(&path).is_err());
     }
 
@@ -650,7 +754,11 @@ mod tests {
     fn backup_is_created_on_write() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.json");
-        let backend = JsonBackend { backup: true, registry: reg() };
+        let backend = JsonBackend {
+            backup: true,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
 
         let data1 = json!({"version": 1});
         backend.write(&path, &data1).unwrap();
@@ -669,19 +777,34 @@ mod tests {
     fn encrypted_wrong_key_fails() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test-enc-bad.bin");
-        let backend = BinaryEncryptedBackend::new("correct-key", false, reg());
+        let backend = BinaryEncryptedBackend::new("correct-key", false, reg(), max_read());
         let data = json!({"secret": "value"});
         backend.write(&path, &data).unwrap();
 
-        let wrong_backend = BinaryEncryptedBackend::new("wrong-key", false, reg());
+        let wrong_backend = BinaryEncryptedBackend::new("wrong-key", false, reg(), max_read());
         assert!(wrong_backend.read(&path).is_err());
+    }
+
+    #[test]
+    fn read_file_bounded_rejects_oversized_file() {
+        let dir = TempDir::new().unwrap();
+        let path = tmp_path(&dir, "large.json");
+        let oversized = vec![b'x'; max_read() + 1];
+        std::fs::write(&path, &oversized).unwrap();
+
+        let err = read_file_bounded(&path, max_read()).unwrap_err();
+        assert!(err.to_string().contains("maximum size"));
     }
 
     #[test]
     fn backup_rotation_keeps_three_slots() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.json");
-        let backend = JsonBackend { backup: true, registry: reg() };
+        let backend = JsonBackend {
+            backup: true,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
 
         backend.write(&path, &json!({"v": 1})).unwrap();
         backend.write(&path, &json!({"v": 2})).unwrap();

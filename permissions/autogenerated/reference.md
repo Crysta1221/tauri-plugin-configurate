@@ -13,7 +13,6 @@ Default permissions for the plugin
 - `allow-load-all`
 - `allow-save-all`
 - `allow-patch-all`
-- `allow-unlock`
 - `allow-watch-file`
 - `allow-unwatch-file`
 - `allow-list-configs`

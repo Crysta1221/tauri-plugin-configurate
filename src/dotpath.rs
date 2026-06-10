@@ -111,32 +111,6 @@ pub fn set(root: &mut Value, path: &str, new_val: Value) -> Result<()> {
     unreachable!("path '{}' was not resolved inside loop", path)
 }
 
-/// Returns a reference to the value at the given dot-separated `path` inside `root`.
-/// Returns `None` if any segment is missing or if an intermediate node is not traversable.
-pub fn get<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    if validate_path(path).is_err() {
-        return None;
-    }
-
-    let mut current = root;
-    for part in path.split('.') {
-        match current {
-            Value::Object(map) => {
-                current = map.get(part)?;
-            }
-            Value::Array(arr) => {
-                if !is_array_index_segment(part) {
-                    return None;
-                }
-                let idx = part.parse::<usize>().ok()?;
-                current = arr.get(idx)?;
-            }
-            _ => return None,
-        }
-    }
-    Some(current)
-}
-
 /// Replaces the value at the given dot-separated `path` inside `root` with `null`.
 pub fn nullify(root: &mut Value, path: &str) -> Result<()> {
     set(root, path, Value::Null)
@@ -235,9 +209,4 @@ mod tests {
         assert_eq!(root["a"]["b"]["c"]["d"], 42);
     }
 
-    #[test]
-    fn get_array_index_path() {
-        let root = json!({"timetable": [{"time": "08:30"}]});
-        assert_eq!(get(&root, "timetable.0.time"), root.pointer("/timetable/0/time"));
-    }
 }

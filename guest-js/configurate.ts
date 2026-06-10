@@ -16,6 +16,7 @@ import {
   deepMergeDefaults,
   applyMigrations,
   assertNonEmptyId,
+  isIoNotFoundError,
   toBatchError,
 } from "./schema-utils";
 import type {
@@ -750,20 +751,25 @@ export class Configurate<S extends SchemaObject> {
   }
 
   /** Serializes the provider for IPC payloads. */
-  private _serializeProvider(): Record<string, unknown> {
+  private _serializeProvider(includeEncryptionKey: boolean): Record<string, unknown> {
     const p = this._opts.provider;
     if (p.kind === "binary") {
-      return { kind: "binary", encryptionKey: p.encryptionKey, kdf: p.kdf };
+      const out: Record<string, unknown> = { kind: "binary", kdf: p.kdf };
+      if (includeEncryptionKey && p.encryptionKey !== undefined) {
+        out.encryptionKey = p.encryptionKey;
+      }
+      return out;
     }
     return { kind: p.kind };
   }
 
   /** Builds common base fields shared by all payloads. */
-  private _buildBasePayload(): Record<string, unknown> {
+  private _buildBasePayload(options?: { includeEncryptionKey?: boolean }): Record<string, unknown> {
+    const includeEncryptionKey = options?.includeEncryptionKey ?? false;
     const base: Record<string, unknown> = {
       fileName: this._opts.fileName,
       baseDir: this._opts.baseDir as number,
-      provider: this._serializeProvider(),
+      provider: this._serializeProvider(includeEncryptionKey),
     };
     if (this._opts.options !== undefined) {
       base.options = {
@@ -843,7 +849,7 @@ export class Configurate<S extends SchemaObject> {
       : await this.load().run();
     const payload = {
       source: {
-        ...this._buildBasePayload(),
+        ...this._buildBasePayload({ includeEncryptionKey: false }),
         data: loaded.data,
         withUnlock: false,
         returnData: false,
@@ -1058,38 +1064,7 @@ export class Configurate<S extends SchemaObject> {
       });
       return isPlainObject(plainData) ? plainData : null;
     } catch (e: unknown) {
-      // Only swallow "not found" errors — rethrow everything else.
-      const messageLower =
-        typeof e === "object" &&
-        e !== null &&
-        "message" in e &&
-        typeof (e as { message: unknown }).message === "string"
-          ? (e as { message: string }).message.toLowerCase()
-          : null;
-      if (
-        typeof e === "object" &&
-        e !== null &&
-        "io_kind" in e &&
-        (e as { io_kind: unknown }).io_kind === "not_found"
-      ) {
-        return null;
-      }
-      if (
-        typeof e === "object" &&
-        e !== null &&
-        "kind" in e &&
-        (e as { kind: unknown }).kind === "io" &&
-        messageLower !== null &&
-        (messageLower.includes("not found") ||
-          messageLower.includes("no such file"))
-      ) {
-        return null;
-      }
-      if (
-        messageLower !== null &&
-        (messageLower.includes("not found") ||
-          messageLower.includes("no such file"))
-      ) {
+      if (isIoNotFoundError(e)) {
         return null;
       }
       throw e;
@@ -1182,7 +1157,7 @@ export class Configurate<S extends SchemaObject> {
       ? separateSecrets(this._schema, lockedData).plain
       : lockedData;
     const payload: Record<string, unknown> = {
-      ...this._buildBasePayload(),
+      ...this._buildBasePayload({ includeEncryptionKey: true }),
       withUnlock: false,
       returnData: false,
       data: plainData,
@@ -1394,7 +1369,7 @@ export class Configurate<S extends SchemaObject> {
     returnData = true,
   ): Record<string, unknown> {
     const base: Record<string, unknown> = {
-      ...this._buildBasePayload(),
+      ...this._buildBasePayload({ includeEncryptionKey: op !== "exists" }),
       withUnlock,
       returnData,
     };

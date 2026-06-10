@@ -704,6 +704,37 @@ export function assertNonEmptyId(ids: Set<string>, id: string): void {
   ids.add(id);
 }
 
+function messageLooksLikeNotFound(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("not found") || lower.includes("no such file");
+}
+
+/** Returns true when `error` represents a missing config file on disk. */
+export function isIoNotFoundError(error: unknown): boolean {
+  if (error instanceof Error && messageLooksLikeNotFound(error.message)) {
+    return true;
+  }
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  if (
+    "io_kind" in error &&
+    (error as { io_kind: unknown }).io_kind === "not_found"
+  ) {
+    return true;
+  }
+  if (
+    "message" in error &&
+    typeof (error as { message: unknown }).message === "string" &&
+    messageLooksLikeNotFound((error as { message: string }).message)
+  ) {
+    return (
+      !("kind" in error) || (error as { kind: unknown }).kind === "io"
+    );
+  }
+  return false;
+}
+
 export function toBatchError(
   error: unknown,
   fallbackKind = "unknown",
