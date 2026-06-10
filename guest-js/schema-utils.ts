@@ -51,15 +51,6 @@ export type KeyringPayloadEntry = {
   isOptional?: boolean;
 };
 
-export type SqliteValueType = "string" | "number" | "boolean";
-
-export interface SqliteColumn {
-  columnName: string;
-  dotpath: string;
-  valueType: SqliteValueType;
-  isKeyring: boolean;
-}
-
 // ---------------------------------------------------------------------------
 // Type guards
 // ---------------------------------------------------------------------------
@@ -425,91 +416,6 @@ export function separateSecrets(
 }
 
 // ---------------------------------------------------------------------------
-// SQLite column derivation
-// ---------------------------------------------------------------------------
-
-function dotpathToColumnName(dotpath: string): string {
-  const normalized = dotpath.replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_");
-  return normalized.toLowerCase();
-}
-
-export function collectSqliteColumns(
-  schema: SchemaObject,
-  prefix = "",
-  out: SqliteColumn[] = [],
-): SqliteColumn[] {
-  for (const [key, rawVal] of Object.entries(schema)) {
-    const dotpath = prefix ? `${prefix}.${key}` : key;
-    const val = isOptionalField(rawVal)
-      ? (rawVal as OptionalFieldRuntime)._schema
-      : rawVal;
-
-    if (isKeyringField(val)) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "string",
-        isKeyring: true,
-      });
-      continue;
-    }
-    if (isSchemaObject(val)) {
-      collectSqliteColumns(val, dotpath, out);
-      continue;
-    }
-    if (isSchemaArray(val)) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "string",
-        isKeyring: false,
-      });
-      continue;
-    }
-    if (val === String) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "string",
-        isKeyring: false,
-      });
-      continue;
-    }
-    if (val === Number) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "number",
-        isKeyring: false,
-      });
-      continue;
-    }
-    if (val === Boolean) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "boolean",
-        isKeyring: false,
-      });
-      continue;
-    }
-  }
-
-  if (prefix === "") {
-    const seen = new Set<string>();
-    for (const col of out) {
-      if (seen.has(col.columnName)) {
-        throw new Error(
-          `SQLite schema column collision: '${col.columnName}'. Adjust schema field names to avoid collisions.`,
-        );
-      }
-      seen.add(col.columnName);
-    }
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 
@@ -796,6 +702,37 @@ export function assertNonEmptyId(ids: Set<string>, id: string): void {
   if (!id) throw new Error("Batch entry id must not be empty.");
   if (ids.has(id)) throw new Error(`Batch entry id '${id}' is duplicated.`);
   ids.add(id);
+}
+
+function messageLooksLikeNotFound(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("not found") || lower.includes("no such file");
+}
+
+/** Returns true when `error` represents a missing config file on disk. */
+export function isIoNotFoundError(error: unknown): boolean {
+  if (error instanceof Error && messageLooksLikeNotFound(error.message)) {
+    return true;
+  }
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  if (
+    "io_kind" in error &&
+    (error as { io_kind: unknown }).io_kind === "not_found"
+  ) {
+    return true;
+  }
+  if (
+    "message" in error &&
+    typeof (error as { message: unknown }).message === "string" &&
+    messageLooksLikeNotFound((error as { message: string }).message)
+  ) {
+    return (
+      !("kind" in error) || (error as { kind: unknown }).kind === "io"
+    );
+  }
+  return false;
 }
 
 export function toBatchError(

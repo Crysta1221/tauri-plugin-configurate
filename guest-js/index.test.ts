@@ -51,14 +51,14 @@ describe("Configurate batch error handling", () => {
     const okConfig = new Configurate({
       schema: okSchema,
       fileName: "ok.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
     const badConfig = new Configurate({
       schema: badSchema,
       fileName: "bad.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: {
         validateOnWrite: true,
@@ -99,7 +99,7 @@ describe("Configurate batch error handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: {
         validateOnRead: true,
@@ -137,7 +137,7 @@ describe("Configurate batch error handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -174,7 +174,7 @@ describe("Configurate batch error handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       defaults: { lang: "en" } as never,
       version: 1,
@@ -216,7 +216,7 @@ describe("Configurate validation", () => {
     const config = new Configurate({
       schema,
       fileName: "secret.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: {
         validateOnWrite: true,
@@ -251,7 +251,7 @@ describe("Configurate validation", () => {
     const config = new Configurate({
       schema,
       fileName: "legacy.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -359,24 +359,6 @@ describe("Provider creation", () => {
     expect(provider.kdf).toBeUndefined();
   });
 
-  it("SqliteProvider should use defaults when no options given", async () => {
-    const { SqliteProvider } = await loadApi(async () => null);
-    const provider = SqliteProvider();
-    expect(provider.kind).toBe("sqlite");
-    expect(provider.dbName).toBe("configurate.db");
-    expect(provider.tableName).toBe("configurate_configs");
-  });
-
-  it("SqliteProvider should accept custom db and table names", async () => {
-    const { SqliteProvider } = await loadApi(async () => null);
-    const provider = SqliteProvider({
-      dbName: "custom.db",
-      tableName: "my_table",
-    });
-    expect(provider.kind).toBe("sqlite");
-    expect(provider.dbName).toBe("custom.db");
-    expect(provider.tableName).toBe("my_table");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -395,7 +377,7 @@ describe("Single config operations", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -411,7 +393,7 @@ describe("Single config operations", () => {
     expect(cmd).toBe("plugin:configurate|create");
     const payload = args.payload as Record<string, unknown>;
     expect(payload.fileName).toBe("app.json");
-    expect(payload.baseDir).toBe(8);
+    expect(payload.baseDir).toBe(13);
     expect((payload.provider as Record<string, unknown>).kind).toBe("json");
     expect((payload.data as Record<string, unknown>).theme).toBe("dark");
     expect((payload.data as Record<string, unknown>).count).toBe(5);
@@ -430,7 +412,7 @@ describe("Single config operations", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -453,7 +435,7 @@ describe("Single config operations", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -480,7 +462,7 @@ describe("Single config operations", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -496,6 +478,34 @@ describe("Single config operations", () => {
     expect(payload.fileName).toBe("app.json");
   });
 
+  it("delete() should omit encryptionKey from IPC payload for binary provider", async () => {
+    const { Configurate, BinaryProvider, defineConfig, invokeMock } =
+      await loadApi(async (command) => {
+        if (command === "plugin:configurate|delete") return null;
+        throw new Error(`unexpected command: ${command}`);
+      });
+
+    const schema = defineConfig({ theme: String });
+    const config = new Configurate({
+      schema,
+      fileName: "app.bin",
+      baseDir: 13 as never,
+      provider: BinaryProvider({ encryptionKey: "secret", kdf: "argon2" }),
+    });
+
+    await config.delete();
+
+    const [, args] = invokeMock.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const provider = (args.payload as Record<string, unknown>).provider as Record<
+      string,
+      unknown
+    >;
+    expect(provider.encryptionKey).toBeUndefined();
+  });
+
   it("exists() should invoke plugin:configurate|exists and return boolean", async () => {
     const { Configurate, JsonProvider, defineConfig, invokeMock } =
       await loadApi(async (command) => {
@@ -507,7 +517,7 @@ describe("Single config operations", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -549,7 +559,7 @@ describe("Single config operations", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -603,7 +613,7 @@ describe("Single config operations", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -631,7 +641,7 @@ describe("Patch operation", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -662,7 +672,7 @@ describe("Patch operation", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -696,7 +706,7 @@ describe("Patch operation", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -724,7 +734,7 @@ describe("Patch operation", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -745,7 +755,7 @@ describe("Patch operation", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: {
         validateOnWrite: true,
@@ -777,7 +787,7 @@ describe("Default values", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       defaults: { lang: "en" } as never,
     });
@@ -799,7 +809,7 @@ describe("Default values", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       defaults: { lang: "en" } as never,
     });
@@ -821,7 +831,7 @@ describe("Default values", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       defaults: { ui: { fontSize: 14 } } as never,
     });
@@ -845,7 +855,7 @@ describe("Default values", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       defaults: { theme: "light" } as never,
     });
@@ -877,7 +887,7 @@ describe("Migration", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       version: 1,
       migrations: [
@@ -912,7 +922,7 @@ describe("Migration", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       version: 2,
       migrations: [
@@ -949,7 +959,7 @@ describe("Migration", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       version: 3,
       migrations: [
@@ -998,7 +1008,7 @@ describe("Migration", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       version: 2,
       migrations: [
@@ -1029,7 +1039,7 @@ describe("Migration", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       version: 3,
     });
@@ -1075,7 +1085,7 @@ describe("onChange", () => {
     const config = new Configurate({
       schema,
       fileName: "settings.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1118,7 +1128,7 @@ describe("onChange", () => {
     const config = new Configurate({
       schema,
       fileName: "settings.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1137,7 +1147,7 @@ describe("onChange", () => {
       payload: {
         fileName: "settings.json",
         operation: "save",
-        targetId: "8|json|settings.json|nested|||",
+        targetId: "13|json|settings.json|nested|",
       },
     });
     expect(callback).toHaveBeenCalledTimes(0);
@@ -1147,7 +1157,7 @@ describe("onChange", () => {
       payload: {
         fileName: "settings.json",
         operation: "save",
-        targetId: "8|json|settings.json||||",
+        targetId: "13|json|settings.json||",
       },
     });
     expect(callback).toHaveBeenCalledTimes(1);
@@ -1172,7 +1182,7 @@ describe("Schema validation on read", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: { validateOnRead: true },
     });
@@ -1195,7 +1205,7 @@ describe("Schema validation on read", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: { validateOnRead: true, allowUnknownKeys: true },
     });
@@ -1216,7 +1226,7 @@ describe("Schema validation on read", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: { validateOnRead: true },
     });
@@ -1236,7 +1246,7 @@ describe("Schema validation on read", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: { validateOnRead: true },
     });
@@ -1259,7 +1269,7 @@ describe("Schema validation on read", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: { validateOnRead: true },
     });
@@ -1281,7 +1291,7 @@ describe("Schema validation on read", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: { validateOnRead: true },
     });
@@ -1304,7 +1314,7 @@ describe("Schema validation on read", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: { validateOnRead: true },
     });
@@ -1327,7 +1337,7 @@ describe("Schema validation on read", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: { validateOnRead: true },
     });
@@ -1355,7 +1365,7 @@ describe("Schema validation on read", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       validation: { validateOnRead: true },
     });
@@ -1381,7 +1391,7 @@ describe("Path validation", () => {
         new Configurate({
           schema,
           fileName: "sub/file.json",
-          baseDir: 8 as never,
+          baseDir: 13 as never,
           provider: JsonProvider(),
         }),
     ).toThrow("cannot contain path separators");
@@ -1398,7 +1408,7 @@ describe("Path validation", () => {
         new Configurate({
           schema,
           fileName: "sub\\file.json",
-          baseDir: 8 as never,
+          baseDir: 13 as never,
           provider: JsonProvider(),
         }),
     ).toThrow("cannot contain path separators");
@@ -1415,7 +1425,7 @@ describe("Path validation", () => {
         new Configurate({
           schema,
           fileName: ".",
-          baseDir: 8 as never,
+          baseDir: 13 as never,
           provider: JsonProvider(),
         }),
     ).toThrow('must not be "." or ".."');
@@ -1432,7 +1442,7 @@ describe("Path validation", () => {
         new Configurate({
           schema,
           fileName: "..",
-          baseDir: 8 as never,
+          baseDir: 13 as never,
           provider: JsonProvider(),
         }),
     ).toThrow('must not be "." or ".."');
@@ -1449,7 +1459,7 @@ describe("Path validation", () => {
         new Configurate({
           schema,
           fileName: "app.json",
-          baseDir: 8 as never,
+          baseDir: 13 as never,
           provider: JsonProvider(),
           options: { dirName: "a//b" },
         }),
@@ -1467,7 +1477,7 @@ describe("Path validation", () => {
         new Configurate({
           schema,
           fileName: "app.json",
-          baseDir: 8 as never,
+          baseDir: 13 as never,
           provider: JsonProvider(),
           options: { dirName: "a/./b" },
         }),
@@ -1485,7 +1495,7 @@ describe("Path validation", () => {
         new Configurate({
           schema,
           fileName: "app.json",
-          baseDir: 8 as never,
+          baseDir: 13 as never,
           provider: JsonProvider(),
           options: { dirName: "a/../b" },
         }),
@@ -1503,7 +1513,7 @@ describe("Path validation", () => {
         new Configurate({
           schema,
           fileName: "app.json",
-          baseDir: 8 as never,
+          baseDir: 13 as never,
           provider: JsonProvider(),
           options: { currentPath: "a/../b" },
         }),
@@ -1521,7 +1531,7 @@ describe("Path validation", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       options: { dirName: "my-app/configs", currentPath: "v2/settings" },
     });
@@ -1561,7 +1571,7 @@ describe("Keyring field handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1617,7 +1627,7 @@ describe("Keyring field handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1660,7 +1670,7 @@ describe("Keyring field handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1688,7 +1698,7 @@ describe("Keyring field handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1747,7 +1757,7 @@ describe("Keyring field handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1784,7 +1794,7 @@ describe("Keyring field handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1841,7 +1851,7 @@ describe("Keyring field handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1887,7 +1897,7 @@ describe("Keyring field handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1932,7 +1942,7 @@ describe("Keyring field handling", () => {
     const config = new Configurate({
       schema,
       fileName: "app.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
     });
 
@@ -1972,7 +1982,7 @@ describe("Migration edge cases", () => {
     const config = new Configurate({
       schema,
       fileName: "mig.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       version: 2,
       migrations: [
@@ -2006,7 +2016,7 @@ describe("Migration edge cases", () => {
     const config = new Configurate({
       schema,
       fileName: "mig2.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       version: 3,
       migrations: [
@@ -2048,7 +2058,7 @@ describe("Migration edge cases", () => {
     const config = new Configurate({
       schema,
       fileName: "stamp.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       version: 5,
     });
@@ -2078,7 +2088,7 @@ describe("Default values edge cases", () => {
     const config = new Configurate({
       schema,
       fileName: "def.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       defaults: { count: 0, label: "default" },
     });
@@ -2095,7 +2105,7 @@ describe("Default values edge cases", () => {
     const config = new Configurate({
       schema,
       fileName: "def2.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       defaults: { count: 0, label: "fallback" },
     });
@@ -2112,7 +2122,7 @@ describe("Default values edge cases", () => {
     const config = new Configurate({
       schema,
       fileName: "def3.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       defaults: { count: 42 },
     });
@@ -2128,7 +2138,7 @@ describe("Default values edge cases", () => {
     const config = new Configurate({
       schema,
       fileName: "def4.json",
-      baseDir: 8 as never,
+      baseDir: 13 as never,
       provider: JsonProvider(),
       defaults: { ui: { theme: "light", fontSize: 14 } } as never,
     });
@@ -2139,5 +2149,22 @@ describe("Default values edge cases", () => {
     >;
     expect(ui.theme).toBe("dark"); // existing value preserved
     expect(ui.fontSize).toBe(14); // missing key filled from defaults
+  });
+});
+
+describe("configDiff", () => {
+  it("throws when nesting exceeds maximum depth", async () => {
+    const { configDiff } = await loadApi(async () => null);
+
+    let oldNested: Record<string, unknown> = { value: 1 };
+    let newNested: Record<string, unknown> = { value: 2 };
+    for (let i = 0; i < 70; i++) {
+      oldNested = { child: oldNested };
+      newNested = { child: newNested };
+    }
+
+    expect(() => configDiff(oldNested, newNested)).toThrow(
+      /maximum nesting depth exceeded/,
+    );
   });
 });

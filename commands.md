@@ -121,22 +121,6 @@ BinaryProvider({ encryptionKey: "key", kdf: "argon2" })   // XChaCha20-Poly1305 
 | `encryptionKey` | `string?` | `undefined` | Encryption key. Omit for unencrypted |
 | `kdf` | `"sha256" \| "argon2"` | `"sha256"` | Key derivation function |
 
-### `SqliteProvider(opts?)`
-
-SQLite database storage. Schema fields are materialized as typed columns.
-
-```ts
-SqliteProvider()
-SqliteProvider({ dbName: "app.db", tableName: "settings" })
-```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `dbName` | `string?` | `"configurate.db"` | Database file name |
-| `tableName` | `string?` | `"configurate_configs"` | Table name |
-
----
-
 ## Configurate Class
 
 ### Constructor

@@ -3,6 +3,12 @@
 use crate::error::{Error, Result};
 use serde_json::Value;
 
+/// Maximum number of dot-separated segments in a path.
+pub const MAX_PATH_SEGMENTS: usize = 64;
+
+/// Maximum array index allowed in dot paths (inclusive).
+pub const MAX_ARRAY_INDEX: usize = 10_000;
+
 /// Validates that a dot-separated `path` is non-empty and contains no empty segments
 /// (i.e. no leading dots, trailing dots, or consecutive dots).
 ///
@@ -11,17 +17,45 @@ pub fn validate_path(path: &str) -> Result<()> {
     if path.is_empty() {
         return Err(Error::Dotpath("path must not be empty".to_string()));
     }
-    if path.split('.').any(|segment| segment.is_empty()) {
+    let segments: Vec<&str> = path.split('.').collect();
+    if segments.iter().any(|segment| segment.is_empty()) {
         return Err(Error::Dotpath(format!(
             "invalid path '{}': empty segment is not allowed",
             path
         )));
+    }
+    if segments.len() > MAX_PATH_SEGMENTS {
+        return Err(Error::Dotpath(format!(
+            "invalid path '{}': exceeds maximum of {} segments",
+            path, MAX_PATH_SEGMENTS
+        )));
+    }
+    for segment in segments {
+        if is_array_index_segment(segment) {
+            validate_array_index(segment, path)?;
+        }
     }
     Ok(())
 }
 
 fn is_array_index_segment(segment: &str) -> bool {
     !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn validate_array_index(segment: &str, path: &str) -> Result<usize> {
+    let idx = segment.parse::<usize>().map_err(|_| {
+        Error::Dotpath(format!(
+            "invalid array index '{}' in path '{}'",
+            segment, path
+        ))
+    })?;
+    if idx > MAX_ARRAY_INDEX {
+        return Err(Error::Dotpath(format!(
+            "array index {} in path '{}' exceeds maximum of {}",
+            idx, path, MAX_ARRAY_INDEX
+        )));
+    }
+    Ok(idx)
 }
 
 fn parse_array_index(segment: &str, path: &str) -> Result<usize> {
@@ -31,12 +65,7 @@ fn parse_array_index(segment: &str, path: &str) -> Result<usize> {
             segment, path
         )));
     }
-    segment.parse::<usize>().map_err(|_| {
-        Error::Dotpath(format!(
-            "invalid array index '{}' in path '{}'",
-            segment, path
-        ))
-    })
+    validate_array_index(segment, path)
 }
 
 /// Sets the value at the given dot-separated `path` inside `root` to `new_val`.
@@ -71,8 +100,17 @@ pub fn set(root: &mut Value, path: &str, new_val: Value) -> Result<()> {
             }
             Value::Array(arr) => {
                 let idx = parse_array_index(part, path)?;
+                let required_len = idx
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Dotpath(format!("array index overflow in path '{}'", path)))?;
+                if required_len > MAX_ARRAY_INDEX + 1 {
+                    return Err(Error::Dotpath(format!(
+                        "array growth for path '{}' exceeds maximum index {}",
+                        path, MAX_ARRAY_INDEX
+                    )));
+                }
                 if idx >= arr.len() {
-                    arr.resize_with(idx + 1, || Value::Null);
+                    arr.resize_with(required_len, || Value::Null);
                 }
                 if is_last {
                     arr[idx] = new_val;
@@ -109,32 +147,6 @@ pub fn set(root: &mut Value, path: &str, new_val: Value) -> Result<()> {
     // All non-empty paths with valid segments are handled inside the loop;
     // the final iteration always returns from the `i == parts.len() - 1` branch.
     unreachable!("path '{}' was not resolved inside loop", path)
-}
-
-/// Returns a reference to the value at the given dot-separated `path` inside `root`.
-/// Returns `None` if any segment is missing or if an intermediate node is not traversable.
-pub fn get<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    if validate_path(path).is_err() {
-        return None;
-    }
-
-    let mut current = root;
-    for part in path.split('.') {
-        match current {
-            Value::Object(map) => {
-                current = map.get(part)?;
-            }
-            Value::Array(arr) => {
-                if !is_array_index_segment(part) {
-                    return None;
-                }
-                let idx = part.parse::<usize>().ok()?;
-                current = arr.get(idx)?;
-            }
-            _ => return None,
-        }
-    }
-    Some(current)
 }
 
 /// Replaces the value at the given dot-separated `path` inside `root` with `null`.
@@ -236,8 +248,19 @@ mod tests {
     }
 
     #[test]
-    fn get_array_index_path() {
-        let root = json!({"timetable": [{"time": "08:30"}]});
-        assert_eq!(get(&root, "timetable.0.time"), root.pointer("/timetable/0/time"));
+    fn validate_path_rejects_too_many_segments() {
+        let path = (0..=MAX_PATH_SEGMENTS)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(".");
+        assert!(validate_path(&path).is_err());
     }
+
+    #[test]
+    fn set_rejects_oversized_array_index() {
+        let mut root = json!({});
+        let path = format!("items.{}", MAX_ARRAY_INDEX + 1);
+        assert!(set(&mut root, &path, json!("x")).is_err());
+    }
+
 }

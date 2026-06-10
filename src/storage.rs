@@ -1,21 +1,16 @@
-/// Storage backend trait and concrete implementations for JSON, YAML, Binary, and EncryptedBinary.
+﻿/// Storage backend trait and concrete implementations for JSON, YAML, Binary, and EncryptedBinary.
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use rand::{Rng, RngExt};
+use rand::Rng;
 use zeroize::Zeroizing;
 
-use rusqlite::types::{Value as SqlValue, ValueRef};
-use rusqlite::{params_from_iter, Connection};
-use serde_json::{Map, Number, Value};
+use serde_json::Value;
 
-use crate::dotpath;
 use crate::error::{Error, Result};
-use crate::models::{NormalizedProvider, SqliteColumn, SqliteValueType};
-
-const SQLITE_JSON_BLOB_COLUMN: &str = "__config_json_blob";
+use crate::models::NormalizedProvider;
 
 /// Tracks paths for which backup files have been created so they can be
 /// cleaned up when the application exits.
@@ -57,6 +52,50 @@ impl BackupRegistry {
 
 /// Maximum number of rolling backup files to keep per config file.
 const BACKUP_COUNT: u32 = 3;
+
+/// Reads at most `max_bytes` from `path`, rejecting larger files before loading
+/// them into memory.
+pub fn read_file_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
+    let max_bytes = u64::try_from(max_bytes).map_err(|_| {
+        Error::InvalidPayload(format!(
+            "max read size {} exceeds addressable limit",
+            max_bytes
+        ))
+    })?;
+
+    let file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if len > max_bytes {
+        return Err(Error::InvalidPayload(format!(
+            "file exceeds maximum size of {} bytes",
+            max_bytes
+        )));
+    }
+
+    let read_limit = max_bytes.checked_add(1).ok_or_else(|| {
+        Error::InvalidPayload("max read size overflow".to_string())
+    })?;
+
+    let mut bytes = Vec::new();
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(Error::from)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(Error::InvalidPayload(format!(
+            "file exceeds maximum size of {} bytes",
+            max_bytes
+        )));
+    }
+    Ok(bytes)
+}
+
+/// Shared empty registry for read-only backend construction.
+pub fn read_only_registry() -> Arc<BackupRegistry> {
+    static REGISTRY: OnceLock<Arc<BackupRegistry>> = OnceLock::new();
+    REGISTRY
+        .get_or_init(|| Arc::new(BackupRegistry::new()))
+        .clone()
+}
 
 /// Creates a rolling backup of the file at `path` (up to `BACKUP_COUNT` copies)
 /// and registers the path in `registry` so backups can be cleaned up on exit.
@@ -101,48 +140,24 @@ fn create_backup(path: &Path, registry: &BackupRegistry) {
 fn write_file_safely(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Storage(format!("invalid file path: {}", path.display())))?;
+    std::fs::create_dir_all(parent)?;
 
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| Error::Storage(format!("invalid file path: {}", path.display())))?
-        .to_string_lossy();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| Error::Storage(format!("system time error: {}", e)))?
-        .as_nanos();
-    // Include a random 32-bit suffix to avoid collisions on systems where the
-    // clock resolution is coarser than nanoseconds or when multiple threads
-    // write the same file concurrently.
-    let random_suffix: u32 = rand::rng().random();
-    let tmp_name = format!(".{}.{}-{}.tmp", file_name, nanos, random_suffix);
-    let tmp_path = path.with_file_name(tmp_name);
-
-    {
-        let mut tmp = std::fs::File::create(&tmp_path)?;
-        tmp.write_all(bytes)?;
-        tmp.sync_all()?;
-    }
-
-    if let Err(rename_err) = std::fs::rename(&tmp_path, path) {
-        // On Windows, `rename` fails when the destination already exists.
-        // Attempt to delete the destination and retry once.
-        // If the retry also fails, report the error but do NOT delete the
-        // temporary file — it holds the newly-written data and leaving it
-        // around is safer than silently discarding it.
-        if path.exists() {
-            std::fs::remove_file(path)?;
-            // On second failure, return the error; tmp file is preserved.
-            std::fs::rename(&tmp_path, path)?;
-        } else {
-            // Destination doesn't exist; rename failed for another reason.
-            // Preserve the tmp file (don't delete) and surface the error.
-            return Err(rename_err.into());
-        }
-    }
-
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| Error::Storage(format!("failed to create temp file: {}", e)))?;
+    tmp.write_all(bytes)?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| Error::Storage(format!("failed to sync temp file: {}", e)))?;
+    tmp.persist(path).map_err(|e| {
+        Error::Storage(format!(
+            "failed to replace '{}': {}",
+            path.display(),
+            e.error
+        ))
+    })?;
     Ok(())
 }
 
@@ -159,11 +174,12 @@ pub trait StorageBackend {
 pub struct JsonBackend {
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl StorageBackend for JsonBackend {
     fn read(&self, path: &Path) -> Result<Value> {
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         let value = serde_json::from_slice(&bytes)?;
         Ok(value)
     }
@@ -181,11 +197,12 @@ impl StorageBackend for JsonBackend {
 pub struct YamlBackend {
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl StorageBackend for YamlBackend {
     fn read(&self, path: &Path) -> Result<Value> {
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         let yaml_val: serde_yml::Value =
             serde_yml::from_slice(&bytes).map_err(|e| Error::Storage(e.to_string()))?;
         // Direct conversion via serde avoids an intermediate JSON string round-trip.
@@ -216,11 +233,12 @@ impl StorageBackend for YamlBackend {
 pub struct BinaryBackend {
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl StorageBackend for BinaryBackend {
     fn read(&self, path: &Path) -> Result<Value> {
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         let value: Value =
             serde_json::from_slice(&bytes).map_err(|e| Error::Storage(e.to_string()))?;
         Ok(value)
@@ -248,11 +266,17 @@ pub struct BinaryEncryptedBackend {
     key: Zeroizing<[u8; 32]>,
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl BinaryEncryptedBackend {
     /// Creates a new backend deriving the cipher key via `SHA-256(key_str)`.
-    pub fn new(key_str: &str, backup: bool, registry: Arc<BackupRegistry>) -> Self {
+    pub fn new(
+        key_str: &str,
+        backup: bool,
+        registry: Arc<BackupRegistry>,
+        max_read_bytes: usize,
+    ) -> Self {
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(key_str.as_bytes());
         let mut key = [0u8; 32];
@@ -261,6 +285,7 @@ impl BinaryEncryptedBackend {
             key: Zeroizing::new(key),
             backup,
             registry,
+            max_read_bytes,
         }
     }
 }
@@ -270,7 +295,7 @@ impl StorageBackend for BinaryEncryptedBackend {
         use chacha20poly1305::aead::{Aead, KeyInit};
         use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         if bytes.len() < 24 {
             return Err(Error::Storage(
                 "encrypted file is too short (missing nonce)".to_string(),
@@ -330,14 +355,21 @@ pub struct BinaryArgon2Backend {
     password: Zeroizing<String>,
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl BinaryArgon2Backend {
-    pub fn new(password: &str, backup: bool, registry: Arc<BackupRegistry>) -> Self {
+    pub fn new(
+        password: &str,
+        backup: bool,
+        registry: Arc<BackupRegistry>,
+        max_read_bytes: usize,
+    ) -> Self {
         Self {
             password: Zeroizing::new(password.to_string()),
             backup,
             registry,
+            max_read_bytes,
         }
     }
 
@@ -358,7 +390,7 @@ impl StorageBackend for BinaryArgon2Backend {
         use chacha20poly1305::aead::{Aead, KeyInit};
         use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         // 16 salt + 24 nonce + at least 16 tag = 56 minimum
         if bytes.len() < 56 {
             return Err(Error::Storage(
@@ -482,11 +514,12 @@ fn json_to_toml_value(value: &Value) -> Result<toml::Value> {
 pub struct TomlBackend {
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 }
 
 impl StorageBackend for TomlBackend {
     fn read(&self, path: &Path) -> Result<Value> {
-        let bytes = std::fs::read(path)?;
+        let bytes = read_file_bounded(path, self.max_read_bytes)?;
         let text = String::from_utf8(bytes)
             .map_err(|e| Error::Storage(format!("TOML file is not valid UTF-8: {}", e)))?;
         let toml_val: toml::Value =
@@ -517,482 +550,50 @@ pub fn file_backend_for(
     provider: &NormalizedProvider,
     backup: bool,
     registry: Arc<BackupRegistry>,
+    max_read_bytes: usize,
 ) -> Result<Box<dyn StorageBackend>> {
     use crate::models::KeyDerivation;
     match provider {
-        NormalizedProvider::Json => Ok(Box::new(JsonBackend { backup, registry })),
-        NormalizedProvider::Yml => Ok(Box::new(YamlBackend { backup, registry })),
-        NormalizedProvider::Toml => Ok(Box::new(TomlBackend { backup, registry })),
+        NormalizedProvider::Json => Ok(Box::new(JsonBackend {
+            backup,
+            registry,
+            max_read_bytes,
+        })),
+        NormalizedProvider::Yml => Ok(Box::new(YamlBackend {
+            backup,
+            registry,
+            max_read_bytes,
+        })),
+        NormalizedProvider::Toml => Ok(Box::new(TomlBackend {
+            backup,
+            registry,
+            max_read_bytes,
+        })),
         NormalizedProvider::Binary {
             encryption_key,
             kdf,
-        } => match encryption_key.as_deref() {
+        } => match encryption_key.as_ref().map(|key| key.as_str()) {
             Some(key) => match kdf {
-                KeyDerivation::Argon2 => Ok(Box::new(BinaryArgon2Backend::new(key, backup, registry))),
-                KeyDerivation::Sha256 => Ok(Box::new(BinaryEncryptedBackend::new(key, backup, registry))),
+                KeyDerivation::Argon2 => Ok(Box::new(BinaryArgon2Backend::new(
+                    key,
+                    backup,
+                    registry,
+                    max_read_bytes,
+                ))),
+                KeyDerivation::Sha256 => Ok(Box::new(BinaryEncryptedBackend::new(
+                    key,
+                    backup,
+                    registry,
+                    max_read_bytes,
+                ))),
             },
-            None => Ok(Box::new(BinaryBackend { backup, registry })),
+            None => Ok(Box::new(BinaryBackend {
+                backup,
+                registry,
+                max_read_bytes,
+            })),
         },
-        NormalizedProvider::Sqlite { .. } => Err(Error::InvalidPayload(
-            "sqlite provider must be handled by sqlite read/write APIs".to_string(),
-        )),
     }
-}
-
-fn sanitize_ident(name: &str, what: &str) -> Result<String> {
-    if name.is_empty() {
-        return Err(Error::InvalidPayload(format!("{} must not be empty", what)));
-    }
-    if !name
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    {
-        return Err(Error::InvalidPayload(format!(
-            "invalid {} '{}': only [A-Za-z0-9_] is allowed",
-            what, name
-        )));
-    }
-    Ok(name.to_string())
-}
-
-fn sql_type_for(value_type: &SqliteValueType) -> &'static str {
-    match value_type {
-        SqliteValueType::String => "TEXT",
-        SqliteValueType::Number => "REAL",
-        SqliteValueType::Boolean => "INTEGER",
-    }
-}
-
-fn ensure_sqlite_parent_dir(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    Ok(())
-}
-
-/// When `migrate_schema` is true, runs `PRAGMA table_info` and `ALTER TABLE ADD COLUMN`
-/// to bring the table up to date with `schema_columns`. Pass `false` for read/delete
-/// paths where DDL migration is unnecessary.
-/// Validates all SQLite identifiers (table name and column names) upfront.
-///
-/// Returns the sanitized table name. Column names are validated as a side-effect;
-/// callers can use `column.column_name` directly afterwards since `sanitize_ident`
-/// is a validation-only function (it never transforms the input).
-fn validate_sqlite_idents(table_name: &str, schema_columns: &[SqliteColumn]) -> Result<String> {
-    let table = sanitize_ident(table_name, "tableName")?;
-    for column in schema_columns {
-        sanitize_ident(&column.column_name, "schema column name")?;
-    }
-    Ok(table)
-}
-
-/// When `migrate_schema` is true, runs `PRAGMA table_info` and `ALTER TABLE ADD COLUMN`
-/// to bring the table up to date with `schema_columns`. Pass `false` for read/delete
-/// paths where DDL migration is unnecessary.
-///
-/// Callers MUST call `validate_sqlite_idents` before invoking this function;
-/// identifiers are used directly without re-validation.
-fn ensure_sqlite_table(
-    conn: &Connection,
-    table_name: &str,
-    schema_columns: &[SqliteColumn],
-    migrate_schema: bool,
-) -> Result<()> {
-    if schema_columns.is_empty() {
-        let sql = format!(
-            "CREATE TABLE IF NOT EXISTS \"{}\" (
-                \"config_key\" TEXT PRIMARY KEY,
-                \"{}\" TEXT
-            )",
-            table_name, SQLITE_JSON_BLOB_COLUMN
-        );
-        conn.execute(&sql, [])
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        return Ok(());
-    }
-
-    let mut column_defs: Vec<String> = Vec::with_capacity(schema_columns.len());
-    for column in schema_columns {
-        column_defs.push(format!("\"{}\" {}", column.column_name, sql_type_for(&column.value_type)));
-    }
-
-    let sql = format!(
-        "CREATE TABLE IF NOT EXISTS \"{}\" (
-            \"config_key\" TEXT PRIMARY KEY,
-            {}
-        )",
-        table_name,
-        column_defs.join(",")
-    );
-
-    conn.execute(&sql, [])
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    if !migrate_schema {
-        return Ok(());
-    }
-
-    let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name);
-    let mut stmt = conn
-        .prepare(&pragma_sql)
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let existing_cols_iter = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let mut existing = std::collections::BTreeSet::new();
-    for col in existing_cols_iter {
-        existing.insert(col.map_err(|e| Error::Storage(e.to_string()))?);
-    }
-
-    for column in schema_columns {
-        if existing.contains(&column.column_name) {
-            continue;
-        }
-        let alter = format!(
-            "ALTER TABLE \"{}\" ADD COLUMN \"{}\" {}",
-            table_name,
-            column.column_name,
-            sql_type_for(&column.value_type)
-        );
-        conn.execute(&alter, [])
-            .map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    Ok(())
-}
-
-fn json_to_sql_value(
-    value: Option<&Value>,
-    value_type: &SqliteValueType,
-    is_keyring: bool,
-) -> SqlValue {
-    if is_keyring {
-        return SqlValue::Null;
-    }
-
-    match value {
-        None | Some(Value::Null) => SqlValue::Null,
-        Some(Value::Bool(b)) => SqlValue::Integer(if *b { 1 } else { 0 }),
-        Some(Value::Number(num)) => SqlValue::Real(num.as_f64().unwrap_or(0.0)),
-        Some(Value::String(s)) => match value_type {
-            SqliteValueType::Number => s
-                .parse::<f64>()
-                .map(SqlValue::Real)
-                .unwrap_or_else(|_| SqlValue::Text(s.clone())),
-            SqliteValueType::Boolean => match s.as_str() {
-                "true" => SqlValue::Integer(1),
-                "false" => SqlValue::Integer(0),
-                _ => SqlValue::Text(s.clone()),
-            },
-            SqliteValueType::String => SqlValue::Text(s.clone()),
-        },
-        Some(Value::Array(arr)) => SqlValue::Text(serde_json::to_string(arr).unwrap_or_default()),
-        Some(Value::Object(obj)) => SqlValue::Text(serde_json::to_string(obj).unwrap_or_default()),
-    }
-}
-
-fn sql_to_json_value(
-    value_ref: ValueRef<'_>,
-    value_type: &SqliteValueType,
-    is_keyring: bool,
-) -> Value {
-    if is_keyring {
-        return Value::Null;
-    }
-
-    match value_ref {
-        ValueRef::Null => Value::Null,
-        ValueRef::Integer(v) => match value_type {
-            SqliteValueType::Boolean => Value::Bool(v != 0),
-            SqliteValueType::Number => {
-                Value::Number(Number::from_f64(v as f64).unwrap_or_else(|| Number::from(0)))
-            }
-            SqliteValueType::String => Value::String(v.to_string()),
-        },
-        ValueRef::Real(v) => match value_type {
-            SqliteValueType::Boolean => Value::Bool(v != 0.0),
-            SqliteValueType::Number => {
-                Value::Number(Number::from_f64(v).unwrap_or_else(|| Number::from(0)))
-            }
-            SqliteValueType::String => Value::String(v.to_string()),
-        },
-        ValueRef::Text(bytes) => {
-            let text = String::from_utf8_lossy(bytes).to_string();
-            let trimmed = text.trim_start();
-            if trimmed.starts_with('{') || trimmed.starts_with('[') {
-                if let Ok(json_val) = serde_json::from_str::<Value>(&text) {
-                    return json_val;
-                }
-            }
-            Value::String(text)
-        }
-        ValueRef::Blob(bytes) => Value::String(String::from_utf8_lossy(bytes).to_string()),
-    }
-}
-
-/// Opens a SQLite connection and applies one-time settings (WAL mode).
-fn open_sqlite_conn(db_path: &Path) -> Result<Connection> {
-    let conn = Connection::open(db_path).map_err(|e| Error::Storage(e.to_string()))?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(conn)
-}
-
-/// Writes one config entry into SQLite.
-pub fn write_sqlite(
-    db_path: &Path,
-    table_name: &str,
-    config_key: &str,
-    value: &Value,
-    schema_columns: &[SqliteColumn],
-) -> Result<()> {
-    let table_name = validate_sqlite_idents(table_name, schema_columns)?;
-
-    ensure_sqlite_parent_dir(db_path)?;
-    let conn = open_sqlite_conn(db_path)?;
-
-    ensure_sqlite_table(&conn, &table_name, schema_columns, true)?;
-
-    if schema_columns.is_empty() {
-        let json_text = serde_json::to_string(value).map_err(|e| Error::Storage(e.to_string()))?;
-        let sql = format!(
-            "INSERT INTO \"{}\" (\"config_key\", \"{}\") VALUES (?, ?)
-            ON CONFLICT(\"config_key\") DO UPDATE SET \"{}\"=excluded.\"{}\"",
-            table_name, SQLITE_JSON_BLOB_COLUMN, SQLITE_JSON_BLOB_COLUMN, SQLITE_JSON_BLOB_COLUMN
-        );
-        conn.execute(&sql, [config_key, json_text.as_str()])
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        return Ok(());
-    }
-
-    let mut col_names = Vec::with_capacity(schema_columns.len());
-    let mut bind_values: Vec<SqlValue> = Vec::with_capacity(schema_columns.len() + 1);
-    bind_values.push(SqlValue::Text(config_key.to_string()));
-
-    for column in schema_columns {
-        col_names.push(column.column_name.clone());
-        let dot_val = dotpath::get(value, &column.dotpath);
-        bind_values.push(json_to_sql_value(
-            dot_val,
-            &column.value_type,
-            column.is_keyring,
-        ));
-    }
-
-    let insert_columns = std::iter::once("\"config_key\"".to_string())
-        .chain(col_names.iter().map(|n| format!("\"{}\"", n)))
-        .collect::<Vec<_>>()
-        .join(",");
-
-    let placeholders = (0..(col_names.len() + 1))
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
-
-    let update_clause = col_names
-        .iter()
-        .map(|n| format!("\"{}\"=excluded.\"{}\"", n, n))
-        .collect::<Vec<_>>()
-        .join(",");
-
-    let sql = format!(
-        "INSERT INTO \"{}\" ({}) VALUES ({})
-        ON CONFLICT(\"config_key\") DO UPDATE SET {}",
-        table_name, insert_columns, placeholders, update_clause
-    );
-
-    conn.execute(&sql, params_from_iter(bind_values.iter()))
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    Ok(())
-}
-
-/// Reads one config entry from SQLite.
-pub fn read_sqlite(
-    db_path: &Path,
-    table_name: &str,
-    config_key: &str,
-    schema_columns: &[SqliteColumn],
-) -> Result<Value> {
-    let table_name = validate_sqlite_idents(table_name, schema_columns)?;
-
-    if !db_path.exists() {
-        return Err(Error::Storage(format!(
-            "sqlite config '{}' was not found (database does not exist)",
-            config_key
-        )));
-    }
-
-    let conn = open_sqlite_conn(db_path)?;
-    ensure_sqlite_table(&conn, &table_name, schema_columns, false)?;
-
-    if schema_columns.is_empty() {
-        let sql = format!(
-            "SELECT \"{}\" FROM \"{}\" WHERE \"config_key\" = ?1",
-            SQLITE_JSON_BLOB_COLUMN, table_name
-        );
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        let mut rows = stmt
-            .query([config_key])
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        if let Some(row) = rows.next().map_err(|e| Error::Storage(e.to_string()))? {
-            let json_text: Option<String> =
-                row.get(0).map_err(|e| Error::Storage(e.to_string()))?;
-            let json_text = json_text.ok_or_else(|| {
-                Error::Storage(format!(
-                    "sqlite config '{}' has no stored JSON value",
-                    config_key
-                ))
-            })?;
-            return serde_json::from_str::<Value>(&json_text)
-                .map_err(|e| Error::Storage(e.to_string()));
-        }
-
-        return Err(Error::Storage(format!(
-            "sqlite config '{}' was not found",
-            config_key
-        )));
-    }
-
-    let select_columns = schema_columns
-        .iter()
-        .map(|c| format!("\"{}\"" , c.column_name))
-        .collect::<Vec<_>>()
-        .join(",");
-
-    let sql = format!(
-        "SELECT {} FROM \"{}\" WHERE \"config_key\" = ?1",
-        select_columns, table_name
-    );
-
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let mut rows = stmt
-        .query([config_key])
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let Some(row) = rows.next().map_err(|e| Error::Storage(e.to_string()))? else {
-        return Err(Error::Storage(format!(
-            "sqlite config '{}' was not found",
-            config_key
-        )));
-    };
-
-    let mut out = Value::Object(Map::new());
-    for (idx, column) in schema_columns.iter().enumerate() {
-        let value_ref = row
-            .get_ref(idx)
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        let json_val = sql_to_json_value(value_ref, &column.value_type, column.is_keyring);
-        dotpath::set(&mut out, &column.dotpath, json_val)
-            .map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    Ok(out)
-}
-
-/// Returns whether one config entry exists in SQLite.
-pub fn exists_sqlite(
-    db_path: &Path,
-    table_name: &str,
-    config_key: &str,
-    schema_columns: &[SqliteColumn],
-) -> Result<bool> {
-    let table_name = validate_sqlite_idents(table_name, schema_columns)?;
-
-    if !db_path.exists() {
-        return Ok(false);
-    }
-
-    let conn = open_sqlite_conn(db_path)?;
-
-    let table_exists: i64 = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [table_name.as_str()],
-            |row| row.get(0),
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    if table_exists == 0 {
-        return Ok(false);
-    }
-
-    let sql = format!(
-        "SELECT EXISTS(SELECT 1 FROM \"{}\" WHERE \"config_key\" = ?1)",
-        table_name
-    );
-    let exists: i64 = conn
-        .query_row(&sql, [config_key], |row| row.get(0))
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    Ok(exists != 0)
-}
-
-/// Deletes one config entry from SQLite by config key.
-pub fn delete_sqlite(
-    db_path: &Path,
-    table_name: &str,
-    config_key: &str,
-    schema_columns: &[SqliteColumn],
-) -> Result<()> {
-    let table_name = validate_sqlite_idents(table_name, schema_columns)?;
-
-    // If the database file does not exist, there is nothing to delete.
-    if !db_path.exists() {
-        return Ok(());
-    }
-
-    let conn = open_sqlite_conn(db_path)?;
-    ensure_sqlite_table(&conn, &table_name, schema_columns, false)?;
-    let sql = format!("DELETE FROM \"{}\" WHERE \"config_key\" = ?1", table_name);
-    conn.execute(&sql, [config_key.to_string()])
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(())
-}
-
-/// Lists all config keys in a SQLite table.
-pub fn list_sqlite(
-    db_path: &Path,
-    table_name: &str,
-) -> Result<Vec<String>> {
-    if !db_path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let table = sanitize_ident(table_name, "tableName")?;
-    let conn = open_sqlite_conn(db_path)?;
-
-    // Check if the table exists.
-    let table_exists: i64 = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [table.as_str()],
-            |row| row.get(0),
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    if table_exists == 0 {
-        return Ok(Vec::new());
-    }
-
-    let sql = format!(
-        "SELECT \"config_key\" FROM \"{}\" ORDER BY \"config_key\"",
-        table
-    );
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let keys: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| Error::Storage(e.to_string()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    Ok(keys)
 }
 
 /// Public wrapper for `json_to_toml_value`, used by the export command.
@@ -1003,6 +604,7 @@ pub fn json_to_toml(value: &Value) -> Result<toml::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_MAX_READ_BYTES;
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -1014,11 +616,19 @@ mod tests {
         Arc::new(BackupRegistry::new())
     }
 
+    fn max_read() -> usize {
+        DEFAULT_MAX_READ_BYTES
+    }
+
     #[test]
     fn json_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.json");
-        let backend = JsonBackend { backup: false, registry: reg() };
+        let backend = JsonBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({"key": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -1029,7 +639,11 @@ mod tests {
     fn yaml_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.yaml");
-        let backend = YamlBackend { backup: false, registry: reg() };
+        let backend = YamlBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({"key": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -1040,7 +654,11 @@ mod tests {
     fn toml_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.toml");
-        let backend = TomlBackend { backup: false, registry: reg() };
+        let backend = TomlBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({
             "key": "value",
             "nested": {"enabled": true},
@@ -1055,7 +673,11 @@ mod tests {
     fn toml_array_null_is_rejected() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test-null.toml");
-        let backend = TomlBackend { backup: false, registry: reg() };
+        let backend = TomlBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({"items": [1, null, 2]});
 
         let err = backend.write(&path, &data).unwrap_err();
@@ -1069,7 +691,11 @@ mod tests {
     fn binary_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.bin");
-        let backend = BinaryBackend { backup: false, registry: reg() };
+        let backend = BinaryBackend {
+            backup: false,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
         let data = json!({"key": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -1080,7 +706,7 @@ mod tests {
     fn encrypted_binary_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.binc");
-        let backend = BinaryEncryptedBackend::new("my-test-key", false, reg());
+        let backend = BinaryEncryptedBackend::new("my-test-key", false, reg(), max_read());
         let data = json!({"secret": "value", "num": 42});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -1088,85 +714,10 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_roundtrip_with_schema_columns() {
-        let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "cfg.db");
-
-        let columns = vec![
-            SqliteColumn {
-                column_name: "theme".to_string(),
-                dotpath: "theme".to_string(),
-                value_type: SqliteValueType::String,
-                is_keyring: false,
-            },
-            SqliteColumn {
-                column_name: "enabled".to_string(),
-                dotpath: "enabled".to_string(),
-                value_type: SqliteValueType::Boolean,
-                is_keyring: false,
-            },
-            SqliteColumn {
-                column_name: "secret".to_string(),
-                dotpath: "secret".to_string(),
-                value_type: SqliteValueType::String,
-                is_keyring: true,
-            },
-        ];
-
-        let value = json!({
-            "theme": "dark",
-            "enabled": true,
-            "secret": null,
-        });
-
-        write_sqlite(&path, "configurate_configs", "app.json", &value, &columns).unwrap();
-        let loaded = read_sqlite(&path, "configurate_configs", "app.json", &columns).unwrap();
-        assert_eq!(loaded["theme"], "dark");
-        assert_eq!(loaded["enabled"], true);
-        assert_eq!(loaded["secret"], Value::Null);
-    }
-
-    #[test]
-    fn sqlite_roundtrip_array_value_in_string_column() {
-        let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "cfg-array.db");
-
-        let columns = vec![SqliteColumn {
-            column_name: "tags".to_string(),
-            dotpath: "tags".to_string(),
-            value_type: SqliteValueType::String,
-            is_keyring: false,
-        }];
-
-        let value = json!({
-            "tags": ["alpha", "beta", "gamma"],
-        });
-
-        write_sqlite(&path, "configurate_configs", "array.json", &value, &columns).unwrap();
-        let loaded = read_sqlite(&path, "configurate_configs", "array.json", &columns).unwrap();
-        assert_eq!(loaded["tags"], json!(["alpha", "beta", "gamma"]));
-    }
-
-    #[test]
-    fn sqlite_exists_checks_presence_without_side_effects() {
-        let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "cfg-exists.db");
-        let columns: Vec<SqliteColumn> = Vec::new();
-
-        assert!(!exists_sqlite(&path, "configurate_configs", "app.json", &columns).unwrap());
-
-        let value = json!({ "theme": "dark" });
-        write_sqlite(&path, "configurate_configs", "app.json", &value, &columns).unwrap();
-
-        assert!(exists_sqlite(&path, "configurate_configs", "app.json", &columns).unwrap());
-        assert!(!exists_sqlite(&path, "configurate_configs", "missing.json", &columns).unwrap());
-    }
-
-    #[test]
     fn argon2_encrypted_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.argon2.bin");
-        let backend = BinaryArgon2Backend::new("my-strong-password", false, reg());
+        let backend = BinaryArgon2Backend::new("my-strong-password", false, reg(), max_read());
         let data = json!({"secret": "argon2-protected", "count": 99});
         backend.write(&path, &data).unwrap();
         let loaded = backend.read(&path).unwrap();
@@ -1177,11 +728,11 @@ mod tests {
     fn argon2_wrong_key_fails() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.argon2-bad.bin");
-        let backend = BinaryArgon2Backend::new("correct-password", false, reg());
+        let backend = BinaryArgon2Backend::new("correct-password", false, reg(), max_read());
         let data = json!({"secret": "value"});
         backend.write(&path, &data).unwrap();
 
-        let wrong_backend = BinaryArgon2Backend::new("wrong-password", false, reg());
+        let wrong_backend = BinaryArgon2Backend::new("wrong-password", false, reg(), max_read());
         assert!(wrong_backend.read(&path).is_err());
     }
 
@@ -1189,7 +740,11 @@ mod tests {
     fn backup_is_created_on_write() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.json");
-        let backend = JsonBackend { backup: true, registry: reg() };
+        let backend = JsonBackend {
+            backup: true,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
 
         let data1 = json!({"version": 1});
         backend.write(&path, &data1).unwrap();
@@ -1197,7 +752,6 @@ mod tests {
         let data2 = json!({"version": 2});
         backend.write(&path, &data2).unwrap();
 
-        // Backups now use the rotating scheme: .bak1 is the most recent backup.
         let backup_path = path.with_extension("json.bak1");
         assert!(backup_path.exists(), "backup file should exist");
         let backup_data: serde_json::Value =
@@ -1206,74 +760,46 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_delete_removes_entry() {
-        let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "cfg-del.db");
-        let columns: Vec<SqliteColumn> = Vec::new();
-
-        let value = json!({ "theme": "dark" });
-        write_sqlite(&path, "configurate_configs", "app.json", &value, &columns).unwrap();
-        assert!(exists_sqlite(&path, "configurate_configs", "app.json", &columns).unwrap());
-
-        delete_sqlite(&path, "configurate_configs", "app.json", &columns).unwrap();
-        assert!(!exists_sqlite(&path, "configurate_configs", "app.json", &columns).unwrap());
-    }
-
-    #[test]
-    fn sqlite_delete_nonexistent_is_ok() {
-        let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "cfg-del-none.db");
-        let columns: Vec<SqliteColumn> = Vec::new();
-
-        // Deleting from a non-existent database should succeed.
-        assert!(delete_sqlite(&path, "configurate_configs", "missing.json", &columns).is_ok());
-    }
-
-    #[test]
     fn encrypted_wrong_key_fails() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test-enc-bad.bin");
-        let backend = BinaryEncryptedBackend::new("correct-key", false, reg());
+        let backend = BinaryEncryptedBackend::new("correct-key", false, reg(), max_read());
         let data = json!({"secret": "value"});
         backend.write(&path, &data).unwrap();
 
-        let wrong_backend = BinaryEncryptedBackend::new("wrong-key", false, reg());
+        let wrong_backend = BinaryEncryptedBackend::new("wrong-key", false, reg(), max_read());
         assert!(wrong_backend.read(&path).is_err());
     }
 
     #[test]
-    fn sqlite_json_blob_roundtrip() {
+    fn read_file_bounded_rejects_oversized_file() {
         let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "cfg-blob.db");
-        let columns: Vec<SqliteColumn> = Vec::new();
+        let path = tmp_path(&dir, "large.json");
+        let oversized = vec![b'x'; max_read() + 1];
+        std::fs::write(&path, &oversized).unwrap();
 
-        let value = json!({
-            "nested": {"deep": {"value": true}},
-            "array": [1, 2, 3],
-            "null_field": null,
-        });
-        write_sqlite(&path, "configurate_configs", "blob.json", &value, &columns).unwrap();
-        let loaded = read_sqlite(&path, "configurate_configs", "blob.json", &columns).unwrap();
-        assert_eq!(loaded, value);
+        let err = read_file_bounded(&path, max_read()).unwrap_err();
+        assert!(err.to_string().contains("maximum size"));
     }
 
     #[test]
     fn backup_rotation_keeps_three_slots() {
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir, "test.json");
-        let backend = JsonBackend { backup: true, registry: reg() };
+        let backend = JsonBackend {
+            backup: true,
+            registry: reg(),
+            max_read_bytes: max_read(),
+        };
 
-        // Write v1, v2, v3, v4 — only the last 3 should remain as backups.
         backend.write(&path, &json!({"v": 1})).unwrap();
         backend.write(&path, &json!({"v": 2})).unwrap();
         backend.write(&path, &json!({"v": 3})).unwrap();
         backend.write(&path, &json!({"v": 4})).unwrap();
 
-        // bak1 = most recent backup (v3), bak2 = v2, bak3 = v1
         let bak1 = path.with_extension("json.bak1");
         let bak2 = path.with_extension("json.bak2");
         let bak3 = path.with_extension("json.bak3");
-        // bak4 should not exist
         let bak4 = path.with_extension("json.bak4");
 
         assert!(bak1.exists(), "bak1 should exist");
@@ -1285,43 +811,5 @@ mod tests {
         let b2: Value = serde_json::from_slice(&std::fs::read(&bak2).unwrap()).unwrap();
         assert_eq!(b1["v"], 3);
         assert_eq!(b2["v"], 2);
-    }
-
-    #[test]
-    fn sqlite_schema_migration_adds_column() {
-        let dir = TempDir::new().unwrap();
-        let path = tmp_path(&dir, "cfg-migrate.db");
-
-        let columns_v1 = vec![SqliteColumn {
-            column_name: "theme".to_string(),
-            dotpath: "theme".to_string(),
-            value_type: SqliteValueType::String,
-            is_keyring: false,
-        }];
-
-        let value = json!({"theme": "dark"});
-        write_sqlite(&path, "test_table", "app", &value, &columns_v1).unwrap();
-
-        // Now add a second column (schema migration).
-        let columns_v2 = vec![
-            SqliteColumn {
-                column_name: "theme".to_string(),
-                dotpath: "theme".to_string(),
-                value_type: SqliteValueType::String,
-                is_keyring: false,
-            },
-            SqliteColumn {
-                column_name: "font_size".to_string(),
-                dotpath: "font_size".to_string(),
-                value_type: SqliteValueType::Number,
-                is_keyring: false,
-            },
-        ];
-
-        let value2 = json!({"theme": "light", "font_size": 14});
-        write_sqlite(&path, "test_table", "app", &value2, &columns_v2).unwrap();
-        let loaded = read_sqlite(&path, "test_table", "app", &columns_v2).unwrap();
-        assert_eq!(loaded["theme"], "light");
-        assert_eq!(loaded["font_size"], 14.0);
     }
 }

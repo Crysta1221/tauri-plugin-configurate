@@ -12,7 +12,7 @@ use crate::models::KeyringOptions;
 
 /// Validates that a keyring `id` does not contain characters that would
 /// interfere with the `{account}/{id}` user string format.
-fn validate_id(id: &str) -> Result<()> {
+pub(crate) fn validate_entry_id(id: &str) -> Result<()> {
     if id.is_empty() {
         return Err(Error::InvalidPayload(
             "keyring id must not be empty".to_string(),
@@ -61,7 +61,7 @@ fn build_user(opts: &KeyringOptions, id: &str) -> String {
 /// If an existing entry exists it will be overwritten.
 pub fn set(opts: &KeyringOptions, id: &str, value: &str) -> Result<()> {
     validate_opts(opts)?;
-    validate_id(id)?;
+    validate_entry_id(id)?;
     let user = build_user(opts, id);
     let entry = keyring::Entry::new(&opts.service, &user)?;
     entry.set_password(value)?;
@@ -72,7 +72,7 @@ pub fn set(opts: &KeyringOptions, id: &str, value: &str) -> Result<()> {
 /// service = `opts.service`, user = `{account}/{id}`.
 pub fn get(opts: &KeyringOptions, id: &str) -> Result<String> {
     validate_opts(opts)?;
-    validate_id(id)?;
+    validate_entry_id(id)?;
     let user = build_user(opts, id);
     let entry = keyring::Entry::new(&opts.service, &user)?;
     let password = entry.get_password()?;
@@ -83,7 +83,7 @@ pub fn get(opts: &KeyringOptions, id: &str) -> Result<String> {
 /// Used for optional keyring fields.
 pub fn get_optional(opts: &KeyringOptions, id: &str) -> Result<Option<String>> {
     validate_opts(opts)?;
-    validate_id(id)?;
+    validate_entry_id(id)?;
     let user = build_user(opts, id);
     let entry = keyring::Entry::new(&opts.service, &user)?;
     match entry.get_password() {
@@ -97,7 +97,7 @@ pub fn get_optional(opts: &KeyringOptions, id: &str) -> Result<Option<String>> {
 /// Returns `Ok(())` even when the entry does not exist.
 pub fn delete(opts: &KeyringOptions, id: &str) -> Result<()> {
     validate_opts(opts)?;
-    validate_id(id)?;
+    validate_entry_id(id)?;
     let user = build_user(opts, id);
     let entry = keyring::Entry::new(&opts.service, &user)?;
     match entry.delete_credential() {

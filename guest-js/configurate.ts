@@ -11,15 +11,14 @@ import {
   collectStaticKeyringPaths,
   collectKeyringReadEntries,
   separateSecrets,
-  collectSqliteColumns,
   assertDataMatchesSchema,
   assertPartialDataMatchesSchema,
   deepMergeDefaults,
   applyMigrations,
   assertNonEmptyId,
+  isIoNotFoundError,
   toBatchError,
 } from "./schema-utils";
-import type { SqliteColumn } from "./schema-utils";
 import type {
   HasDuplicateKeyringIds,
   InferLocked,
@@ -147,7 +146,7 @@ function normalizeConfigurateInit<S extends SchemaObject>(
   const provider = input.provider;
   if (!isProvider(provider)) {
     throw new Error(
-      "Configurate: provider must be created by JsonProvider/YmlProvider/BinaryProvider/SqliteProvider.",
+      "Configurate: provider must be created by JsonProvider/YmlProvider/TomlProvider/BinaryProvider.",
     );
   }
 
@@ -200,19 +199,12 @@ function buildChangeTargetId(
     "fileName" | "baseDir" | "provider" | "options"
   >,
 ): string {
-  const dbName =
-    init.provider.kind === "sqlite" ? (init.provider.dbName ?? "") : "";
-  const tableName =
-    init.provider.kind === "sqlite" ? (init.provider.tableName ?? "") : "";
-
   return [
     JSON.stringify(init.baseDir),
     init.provider.kind,
     init.fileName,
     init.options?.dirName ?? "",
     init.options?.currentPath ?? "",
-    dbName,
-    tableName,
   ].join("|");
 }
 
@@ -744,8 +736,6 @@ export class Configurate<S extends SchemaObject> {
   }[];
   private readonly _hasKeyringFields: boolean;
   private readonly _hasArrayKeyring: boolean;
-  private readonly _sqliteColumns: SqliteColumn[];
-
   constructor(opts: ConfigurateInit<S>) {
     const normalized = normalizeConfigurateInit(opts);
 
@@ -758,31 +748,29 @@ export class Configurate<S extends SchemaObject> {
     this._keyringPaths = collectStaticKeyringPaths(this._schema);
     this._hasKeyringFields = hasAnyKeyring(this._schema);
     this._hasArrayKeyring = hasArrayKeyring(this._schema);
-    this._sqliteColumns = collectSqliteColumns(this._schema);
   }
 
   /** Serializes the provider for IPC payloads. */
-  private _serializeProvider(): Record<string, unknown> {
+  private _serializeProvider(includeEncryptionKey: boolean): Record<string, unknown> {
     const p = this._opts.provider;
     if (p.kind === "binary") {
-      return { kind: "binary", encryptionKey: p.encryptionKey, kdf: p.kdf };
-    }
-    if (p.kind === "sqlite") {
-      return { kind: "sqlite", dbName: p.dbName, tableName: p.tableName };
+      const out: Record<string, unknown> = { kind: "binary", kdf: p.kdf };
+      if (includeEncryptionKey && p.encryptionKey !== undefined) {
+        out.encryptionKey = p.encryptionKey;
+      }
+      return out;
     }
     return { kind: p.kind };
   }
 
   /** Builds common base fields shared by all payloads. */
-  private _buildBasePayload(): Record<string, unknown> {
+  private _buildBasePayload(options?: { includeEncryptionKey?: boolean }): Record<string, unknown> {
+    const includeEncryptionKey = options?.includeEncryptionKey ?? false;
     const base: Record<string, unknown> = {
       fileName: this._opts.fileName,
       baseDir: this._opts.baseDir as number,
-      provider: this._serializeProvider(),
+      provider: this._serializeProvider(includeEncryptionKey),
     };
-    if (this._opts.provider.kind === "sqlite") {
-      base.schemaColumns = this._sqliteColumns;
-    }
     if (this._opts.options !== undefined) {
       base.options = {
         dirName: this._opts.options.dirName,
@@ -861,7 +849,7 @@ export class Configurate<S extends SchemaObject> {
       : await this.load().run();
     const payload = {
       source: {
-        ...this._buildBasePayload(),
+        ...this._buildBasePayload({ includeEncryptionKey: false }),
         data: loaded.data,
         withUnlock: false,
         returnData: false,
@@ -1076,38 +1064,7 @@ export class Configurate<S extends SchemaObject> {
       });
       return isPlainObject(plainData) ? plainData : null;
     } catch (e: unknown) {
-      // Only swallow "not found" errors — rethrow everything else.
-      const messageLower =
-        typeof e === "object" &&
-        e !== null &&
-        "message" in e &&
-        typeof (e as { message: unknown }).message === "string"
-          ? (e as { message: string }).message.toLowerCase()
-          : null;
-      if (
-        typeof e === "object" &&
-        e !== null &&
-        "io_kind" in e &&
-        (e as { io_kind: unknown }).io_kind === "not_found"
-      ) {
-        return null;
-      }
-      if (
-        typeof e === "object" &&
-        e !== null &&
-        "kind" in e &&
-        (e as { kind: unknown }).kind === "io" &&
-        messageLower !== null &&
-        (messageLower.includes("not found") ||
-          messageLower.includes("no such file"))
-      ) {
-        return null;
-      }
-      if (
-        messageLower !== null &&
-        (messageLower.includes("not found") ||
-          messageLower.includes("no such file"))
-      ) {
+      if (isIoNotFoundError(e)) {
         return null;
       }
       throw e;
@@ -1200,7 +1157,7 @@ export class Configurate<S extends SchemaObject> {
       ? separateSecrets(this._schema, lockedData).plain
       : lockedData;
     const payload: Record<string, unknown> = {
-      ...this._buildBasePayload(),
+      ...this._buildBasePayload({ includeEncryptionKey: true }),
       withUnlock: false,
       returnData: false,
       data: plainData,
@@ -1412,7 +1369,13 @@ export class Configurate<S extends SchemaObject> {
     returnData = true,
   ): Record<string, unknown> {
     const base: Record<string, unknown> = {
-      ...this._buildBasePayload(),
+      ...this._buildBasePayload({
+        includeEncryptionKey:
+          op === "load" ||
+          op === "create" ||
+          op === "save" ||
+          op === "patch",
+      }),
       withUnlock,
       returnData,
     };
@@ -1512,11 +1475,18 @@ export interface DiffEntry {
  * // ]
  * ```
  */
+const MAX_DIFF_DEPTH = 64;
+
 export function configDiff(
   oldData: Record<string, unknown>,
   newData: Record<string, unknown>,
   prefix = "",
+  depth = 0,
 ): DiffEntry[] {
+  if (depth > MAX_DIFF_DEPTH) {
+    throw new Error("configDiff: maximum nesting depth exceeded");
+  }
+
   const entries: DiffEntry[] = [];
 
   const allKeys = new Set([
@@ -1547,9 +1517,10 @@ export function configDiff(
           oldVal as Record<string, unknown>,
           newVal as Record<string, unknown>,
           path,
+          depth + 1,
         ),
       );
-    } else if (!deepEqual(oldVal, newVal)) {
+    } else if (!deepEqual(oldVal, newVal, depth + 1)) {
       entries.push({ path, type: "changed", oldValue: oldVal, newValue: newVal });
     }
   }
@@ -1557,14 +1528,17 @@ export function configDiff(
   return entries;
 }
 
-function deepEqual(a: unknown, b: unknown): boolean {
+function deepEqual(a: unknown, b: unknown, depth = 0): boolean {
+  if (depth > MAX_DIFF_DEPTH) {
+    throw new Error("configDiff: maximum nesting depth exceeded");
+  }
   if (a === b) return true;
   if (a === null || b === null) return false;
   if (typeof a !== typeof b) return false;
 
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
-    return a.every((val, idx) => deepEqual(val, b[idx]));
+    return a.every((val, idx) => deepEqual(val, b[idx], depth + 1));
   }
 
   if (isPlainObject(a) && isPlainObject(b)) {
@@ -1572,7 +1546,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
     const bObj = b as Record<string, unknown>;
     const keys = new Set([...Object.keys(aObj), ...Object.keys(bObj)]);
     for (const key of keys) {
-      if (!deepEqual(aObj[key], bObj[key])) return false;
+      if (!deepEqual(aObj[key], bObj[key], depth + 1)) return false;
     }
     return true;
   }

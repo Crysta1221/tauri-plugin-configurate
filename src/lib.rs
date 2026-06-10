@@ -1,5 +1,5 @@
 use tauri::{
-    plugin::{Builder, TauriPlugin},
+    plugin::TauriPlugin,
     Manager, Runtime,
 };
 
@@ -11,6 +11,7 @@ mod desktop;
 mod mobile;
 
 mod commands;
+mod config;
 mod dotpath;
 mod error;
 mod keyring_store;
@@ -19,6 +20,9 @@ mod models;
 mod storage;
 mod watcher;
 
+pub use config::{
+    BaseDirPolicy, Builder, PluginConfig, PluginSettings, DEFAULT_MAX_READ_BYTES,
+};
 pub use error::{Error, Result};
 
 #[cfg(desktop)]
@@ -38,45 +42,7 @@ impl<R: Runtime, T: Manager<R>> crate::ConfigurateExt<R> for T {
     }
 }
 
-/// Initializes the plugin.
-pub fn init<R: Runtime>() -> TauriPlugin<R> {
-    Builder::new("configurate")
-        .invoke_handler(tauri::generate_handler![
-            commands::create,
-            commands::load,
-            commands::save,
-            commands::patch,
-            commands::delete,
-            commands::exists,
-            commands::load_all,
-            commands::save_all,
-            commands::patch_all,
-            commands::unlock,
-            commands::watch_file,
-            commands::unwatch_file,
-            commands::list_configs,
-            commands::reset,
-            commands::export_config,
-            commands::import_config,
-        ])
-        .setup(|app, api| {
-            #[cfg(mobile)]
-            let configurate = mobile::init(app, api)?;
-            #[cfg(desktop)]
-            let configurate = desktop::init(app, api)?;
-            app.manage(configurate);
-            app.manage(locker::FileLockRegistry::new());
-            app.manage(std::sync::Arc::new(storage::BackupRegistry::new()));
-            let watcher_state = watcher::WatcherState::new(app.clone())?;
-            app.manage(watcher_state);
-            Ok(())
-        })
-        .on_event(|app, event| {
-            if let tauri::RunEvent::Exit = event {
-                if let Some(registry) = app.try_state::<std::sync::Arc<storage::BackupRegistry>>() {
-                    registry.cleanup_all();
-                }
-            }
-        })
-        .build()
+/// Initializes the plugin with default settings.
+pub fn init<R: Runtime>() -> TauriPlugin<R, Option<PluginConfig>> {
+    Builder::default().build()
 }
