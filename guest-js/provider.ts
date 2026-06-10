@@ -10,14 +10,11 @@ type ProviderPayload =
   | { kind: "json" }
   | { kind: "yml" }
   | { kind: "toml" }
-  | { kind: "binary"; encryptionKey?: string; kdf?: KeyDerivation }
-  | { kind: "sqlite"; dbName?: string; tableName?: string };
+  | { kind: "binary"; encryptionKey?: string; kdf?: KeyDerivation };
 
 export type ConfigurateProvider = ProviderBrand & Readonly<ProviderPayload>;
 
 const PROVIDER_BRAND_KEY = "__configurateProviderBrand" as const;
-const SQLITE_DEFAULT_DB = "configurate.db" as const;
-const SQLITE_DEFAULT_TABLE = "configurate_configs" as const;
 
 function createProvider(payload: ProviderPayload): ConfigurateProvider {
   const provider = {
@@ -30,12 +27,6 @@ function createProvider(payload: ProviderPayload): ConfigurateProvider {
 function isBinaryProvider(value: Record<string, unknown>): boolean {
   if (value.encryptionKey !== undefined && typeof value.encryptionKey !== "string") return false;
   if (value.kdf !== undefined && typeof value.kdf !== "string") return false;
-  return true;
-}
-
-function isSqliteProvider(value: Record<string, unknown>): boolean {
-  if (value.dbName !== undefined && typeof value.dbName !== "string") return false;
-  if (value.tableName !== undefined && typeof value.tableName !== "string") return false;
   return true;
 }
 
@@ -55,8 +46,6 @@ export function isProvider(input: unknown): input is ConfigurateProvider {
       return true;
     case "binary":
       return isBinaryProvider(value);
-    case "sqlite":
-      return isSqliteProvider(value);
     default:
       return false;
   }
@@ -97,15 +86,3 @@ export function BinaryProvider(opts?: {
     kdf: opts?.kdf,
   });
 }
-
-export function SqliteProvider(opts?: {
-  dbName?: string;
-  tableName?: string;
-}): ConfigurateProvider {
-  return createProvider({
-    kind: "sqlite",
-    dbName: opts?.dbName ?? SQLITE_DEFAULT_DB,
-    tableName: opts?.tableName ?? SQLITE_DEFAULT_TABLE,
-  });
-}
-

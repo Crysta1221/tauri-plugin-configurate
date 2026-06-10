@@ -11,7 +11,6 @@ import {
   collectStaticKeyringPaths,
   collectKeyringReadEntries,
   separateSecrets,
-  collectSqliteColumns,
   assertDataMatchesSchema,
   assertPartialDataMatchesSchema,
   deepMergeDefaults,
@@ -19,7 +18,6 @@ import {
   assertNonEmptyId,
   toBatchError,
 } from "./schema-utils";
-import type { SqliteColumn } from "./schema-utils";
 import type {
   HasDuplicateKeyringIds,
   InferLocked,
@@ -147,7 +145,7 @@ function normalizeConfigurateInit<S extends SchemaObject>(
   const provider = input.provider;
   if (!isProvider(provider)) {
     throw new Error(
-      "Configurate: provider must be created by JsonProvider/YmlProvider/BinaryProvider/SqliteProvider.",
+      "Configurate: provider must be created by JsonProvider/YmlProvider/TomlProvider/BinaryProvider.",
     );
   }
 
@@ -200,19 +198,12 @@ function buildChangeTargetId(
     "fileName" | "baseDir" | "provider" | "options"
   >,
 ): string {
-  const dbName =
-    init.provider.kind === "sqlite" ? (init.provider.dbName ?? "") : "";
-  const tableName =
-    init.provider.kind === "sqlite" ? (init.provider.tableName ?? "") : "";
-
   return [
     JSON.stringify(init.baseDir),
     init.provider.kind,
     init.fileName,
     init.options?.dirName ?? "",
     init.options?.currentPath ?? "",
-    dbName,
-    tableName,
   ].join("|");
 }
 
@@ -744,8 +735,6 @@ export class Configurate<S extends SchemaObject> {
   }[];
   private readonly _hasKeyringFields: boolean;
   private readonly _hasArrayKeyring: boolean;
-  private readonly _sqliteColumns: SqliteColumn[];
-
   constructor(opts: ConfigurateInit<S>) {
     const normalized = normalizeConfigurateInit(opts);
 
@@ -758,7 +747,6 @@ export class Configurate<S extends SchemaObject> {
     this._keyringPaths = collectStaticKeyringPaths(this._schema);
     this._hasKeyringFields = hasAnyKeyring(this._schema);
     this._hasArrayKeyring = hasArrayKeyring(this._schema);
-    this._sqliteColumns = collectSqliteColumns(this._schema);
   }
 
   /** Serializes the provider for IPC payloads. */
@@ -766,9 +754,6 @@ export class Configurate<S extends SchemaObject> {
     const p = this._opts.provider;
     if (p.kind === "binary") {
       return { kind: "binary", encryptionKey: p.encryptionKey, kdf: p.kdf };
-    }
-    if (p.kind === "sqlite") {
-      return { kind: "sqlite", dbName: p.dbName, tableName: p.tableName };
     }
     return { kind: p.kind };
   }
@@ -780,9 +765,6 @@ export class Configurate<S extends SchemaObject> {
       baseDir: this._opts.baseDir as number,
       provider: this._serializeProvider(),
     };
-    if (this._opts.provider.kind === "sqlite") {
-      base.schemaColumns = this._sqliteColumns;
-    }
     if (this._opts.options !== undefined) {
       base.options = {
         dirName: this._opts.options.dirName,

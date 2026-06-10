@@ -359,24 +359,6 @@ describe("Provider creation", () => {
     expect(provider.kdf).toBeUndefined();
   });
 
-  it("SqliteProvider should use defaults when no options given", async () => {
-    const { SqliteProvider } = await loadApi(async () => null);
-    const provider = SqliteProvider();
-    expect(provider.kind).toBe("sqlite");
-    expect(provider.dbName).toBe("configurate.db");
-    expect(provider.tableName).toBe("configurate_configs");
-  });
-
-  it("SqliteProvider should accept custom db and table names", async () => {
-    const { SqliteProvider } = await loadApi(async () => null);
-    const provider = SqliteProvider({
-      dbName: "custom.db",
-      tableName: "my_table",
-    });
-    expect(provider.kind).toBe("sqlite");
-    expect(provider.dbName).toBe("custom.db");
-    expect(provider.tableName).toBe("my_table");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1137,7 +1119,7 @@ describe("onChange", () => {
       payload: {
         fileName: "settings.json",
         operation: "save",
-        targetId: "8|json|settings.json|nested|||",
+        targetId: "8|json|settings.json|nested|",
       },
     });
     expect(callback).toHaveBeenCalledTimes(0);
@@ -1147,7 +1129,7 @@ describe("onChange", () => {
       payload: {
         fileName: "settings.json",
         operation: "save",
-        targetId: "8|json|settings.json||||",
+        targetId: "8|json|settings.json||",
       },
     });
     expect(callback).toHaveBeenCalledTimes(1);

@@ -51,15 +51,6 @@ export type KeyringPayloadEntry = {
   isOptional?: boolean;
 };
 
-export type SqliteValueType = "string" | "number" | "boolean";
-
-export interface SqliteColumn {
-  columnName: string;
-  dotpath: string;
-  valueType: SqliteValueType;
-  isKeyring: boolean;
-}
-
 // ---------------------------------------------------------------------------
 // Type guards
 // ---------------------------------------------------------------------------
@@ -422,91 +413,6 @@ export function separateSecrets(
     return { plain: data, keyringEntries: [] };
   }
   return { plain, keyringEntries };
-}
-
-// ---------------------------------------------------------------------------
-// SQLite column derivation
-// ---------------------------------------------------------------------------
-
-function dotpathToColumnName(dotpath: string): string {
-  const normalized = dotpath.replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_");
-  return normalized.toLowerCase();
-}
-
-export function collectSqliteColumns(
-  schema: SchemaObject,
-  prefix = "",
-  out: SqliteColumn[] = [],
-): SqliteColumn[] {
-  for (const [key, rawVal] of Object.entries(schema)) {
-    const dotpath = prefix ? `${prefix}.${key}` : key;
-    const val = isOptionalField(rawVal)
-      ? (rawVal as OptionalFieldRuntime)._schema
-      : rawVal;
-
-    if (isKeyringField(val)) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "string",
-        isKeyring: true,
-      });
-      continue;
-    }
-    if (isSchemaObject(val)) {
-      collectSqliteColumns(val, dotpath, out);
-      continue;
-    }
-    if (isSchemaArray(val)) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "string",
-        isKeyring: false,
-      });
-      continue;
-    }
-    if (val === String) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "string",
-        isKeyring: false,
-      });
-      continue;
-    }
-    if (val === Number) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "number",
-        isKeyring: false,
-      });
-      continue;
-    }
-    if (val === Boolean) {
-      out.push({
-        columnName: dotpathToColumnName(dotpath),
-        dotpath,
-        valueType: "boolean",
-        isKeyring: false,
-      });
-      continue;
-    }
-  }
-
-  if (prefix === "") {
-    const seen = new Set<string>();
-    for (const col of out) {
-      if (seen.has(col.columnName)) {
-        throw new Error(
-          `SQLite schema column collision: '${col.columnName}'. Adjust schema field names to avoid collisions.`,
-        );
-      }
-      seen.add(col.columnName);
-    }
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
