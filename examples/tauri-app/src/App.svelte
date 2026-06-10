@@ -5,11 +5,7 @@
     defineConfig,
     keyring,
   } from 'tauri-plugin-configurate-api';
-  import {
-    BinaryProvider,
-    JsonProvider,
-    SqliteProvider,
-  } from 'tauri-plugin-configurate-api/provider';
+  import { BinaryProvider, JsonProvider } from 'tauri-plugin-configurate-api/provider';
 
   const appSchema = defineConfig({
     appName: String,
@@ -19,12 +15,6 @@
 
   const secretSchema = defineConfig({
     apiKey: keyring(String, { id: 'api-key' }),
-  });
-
-  const sqliteSchema = defineConfig({
-    profileName: String,
-    refreshIntervalSec: Number,
-    sessionToken: keyring(String, { id: 'sqlite-session-token' }),
   });
 
   const KEYRING_OPTS = { service: 'tauri-configurate-example', account: 'default' };
@@ -43,16 +33,6 @@
     provider: BinaryProvider({ encryptionKey: 'example-binary-key' }),
   });
 
-  const sqliteConfig = new Configurate({
-    schema: sqliteSchema,
-    fileName: 'profile.settings',
-    baseDir: BaseDirectory.AppConfig,
-    provider: SqliteProvider({
-      dbName: 'example-configurate.db',
-      tableName: 'configurate_profiles',
-    }),
-  });
-
   let log = $state<string[]>([]);
 
   let appName = $state('MyApp');
@@ -60,10 +40,6 @@
   let theme = $state('dark');
 
   let apiKey = $state('my-api-key-123');
-
-  let profileName = $state('default-profile');
-  let refreshIntervalSec = $state(30);
-  let sessionToken = $state('sqlite-session-token-123');
 
   function addLog(msg: string) {
     log = [`[${new Date().toLocaleTimeString()}] ${msg}`, ...log];
@@ -73,11 +49,7 @@
     try {
       await appConfig.create({ appName, port, theme }).run();
       await secretConfig.save({ apiKey }).lock(KEYRING_OPTS).run();
-      await sqliteConfig
-        .save({ profileName, refreshIntervalSec, sessionToken })
-        .lock(KEYRING_OPTS)
-        .run();
-      addLog('seed all succeeded (json + binary + sqlite)');
+      addLog('seed all succeeded (json + binary)');
     } catch (e) {
       addLog(`seed all failed: ${e}`);
     }
@@ -88,15 +60,12 @@
       const loaded = await Configurate.loadAll([
         { id: 'app', config: appConfig },
         { id: 'secret', config: secretConfig },
-        { id: 'sqlite', config: sqliteConfig },
       ])
         .unlock('secret', KEYRING_OPTS)
-        .unlock('sqlite', KEYRING_OPTS)
         .run();
 
       const appResult = loaded.results.app;
       const secretResult = loaded.results.secret;
-      const sqliteResult = loaded.results.sqlite;
 
       if (appResult?.ok) {
         const data = appResult.data as { appName: string; port: number; theme: string };
@@ -115,22 +84,6 @@
       } else if (secretResult) {
         addLog(`secret load failed: ${secretResult.error.kind} ${secretResult.error.message}`);
       }
-
-      if (sqliteResult?.ok) {
-        const data = sqliteResult.data as {
-          profileName: string;
-          refreshIntervalSec: number;
-          sessionToken: string;
-        };
-        profileName = data.profileName;
-        refreshIntervalSec = data.refreshIntervalSec;
-        sessionToken = data.sessionToken;
-        addLog(
-          `sqlite => profile=${data.profileName}, interval=${data.refreshIntervalSec}, token=${data.sessionToken}`,
-        );
-      } else if (sqliteResult) {
-        addLog(`sqlite load failed: ${sqliteResult.error.kind} ${sqliteResult.error.message}`);
-      }
     } catch (e) {
       addLog(`loadAll failed: ${e}`);
     }
@@ -141,22 +94,15 @@
       const result = await Configurate.saveAll([
         { id: 'app', config: appConfig, data: { appName, port, theme } },
         { id: 'secret', config: secretConfig, data: { apiKey } },
-        {
-          id: 'sqlite',
-          config: sqliteConfig,
-          data: { profileName, refreshIntervalSec, sessionToken },
-        },
       ])
         .lock('secret', KEYRING_OPTS)
-        .lock('sqlite', KEYRING_OPTS)
         .run();
 
       const appResult = result.results.app;
       const secretResult = result.results.secret;
-      const sqliteResult = result.results.sqlite;
 
       addLog(
-        `saveAll app=${appResult?.ok ? 'ok' : 'ng'} secret=${secretResult?.ok ? 'ok' : 'ng'} sqlite=${sqliteResult?.ok ? 'ok' : 'ng'}`,
+        `saveAll app=${appResult?.ok ? 'ok' : 'ng'} secret=${secretResult?.ok ? 'ok' : 'ng'}`,
       );
     } catch (e) {
       addLog(`saveAll failed: ${e}`);
@@ -167,47 +113,9 @@
     try {
       await appConfig.delete();
       await secretConfig.delete(KEYRING_OPTS);
-      await sqliteConfig.delete(KEYRING_OPTS);
       addLog('delete all succeeded');
     } catch (e) {
       addLog(`delete all failed: ${e}`);
-    }
-  }
-
-  async function handleSqliteSave() {
-    try {
-      await sqliteConfig
-        .save({ profileName, refreshIntervalSec, sessionToken })
-        .lock(KEYRING_OPTS)
-        .run();
-      addLog('sqlite save succeeded');
-    } catch (e) {
-      addLog(`sqlite save failed: ${e}`);
-    }
-  }
-
-  async function handleSqliteLoad() {
-    try {
-      const unlocked = await sqliteConfig.load().unlock(KEYRING_OPTS);
-      const data = unlocked.data;
-      profileName = data.profileName;
-      refreshIntervalSec = data.refreshIntervalSec;
-      sessionToken = data.sessionToken;
-      addLog(
-        `sqlite load => profile=${data.profileName}, interval=${data.refreshIntervalSec}, token=${data.sessionToken}`,
-      );
-      unlocked.lock();
-    } catch (e) {
-      addLog(`sqlite load failed: ${e}`);
-    }
-  }
-
-  async function handleSqliteDelete() {
-    try {
-      await sqliteConfig.delete(KEYRING_OPTS);
-      addLog('sqlite delete succeeded');
-    } catch (e) {
-      addLog(`sqlite delete failed: ${e}`);
     }
   }
 </script>
@@ -216,7 +124,7 @@
   <header class="header">
     <span class="eyebrow">tauri plugin</span>
     <h1>configurate</h1>
-    <p class="summary">JSON · Binary(XChaCha20+keyring) · SQLite(keyring) のデモアプリ</p>
+    <p class="summary">JSON · Binary(XChaCha20+keyring) のデモアプリ</p>
   </header>
 
   <div class="sections">
@@ -253,33 +161,6 @@
         <div class="field">
           <span class="label">apiKey <span class="badge">keyring</span></span>
           <input bind:value={apiKey} type="password" />
-        </div>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="section-head">
-        <span class="dot"></span>
-        <h2>SQLite Config</h2>
-        <code class="filename">example-configurate.db</code>
-      </div>
-      <div class="fields">
-        <div class="field">
-          <span class="label">profileName</span>
-          <input bind:value={profileName} type="text" />
-        </div>
-        <div class="field">
-          <span class="label">interval (s)</span>
-          <input bind:value={refreshIntervalSec} type="number" min="1" />
-        </div>
-        <div class="field">
-          <span class="label">sessionToken <span class="badge">keyring</span></span>
-          <input bind:value={sessionToken} type="password" />
-        </div>
-        <div class="actions">
-          <button onclick={handleSqliteSave}>save().lock()</button>
-          <button class="ghost" onclick={handleSqliteLoad}>load().unlock()</button>
-          <button class="warn" onclick={handleSqliteDelete}>delete()</button>
         </div>
       </div>
     </div>
@@ -353,15 +234,11 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* ── Layout ─────────────────────────────────────────── */
-
   .container {
     max-width: 820px;
     margin: 0 auto;
     padding: clamp(2rem, 5vw, 3.5rem) clamp(1rem, 4vw, 2rem) 4rem;
   }
-
-  /* ── Header ─────────────────────────────────────────── */
 
   .header {
     margin-bottom: clamp(2rem, 4vw, 2.75rem);
@@ -396,8 +273,6 @@
     color: var(--c-muted);
   }
 
-  /* ── Sections ───────────────────────────────────────── */
-
   .sections {
     margin-bottom: 2rem;
   }
@@ -429,8 +304,6 @@
     margin: 0;
   }
 
-  /* ── Decorative dots ────────────────────────────────── */
-
   .dot {
     width: 5px;
     height: 5px;
@@ -447,8 +320,6 @@
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.35; }
   }
-
-  /* ── Inline tags ────────────────────────────────────── */
 
   .filename {
     font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
@@ -470,8 +341,6 @@
     border-radius: 3px;
     padding: 0.06rem 0.32rem;
   }
-
-  /* ── Fields ─────────────────────────────────────────── */
 
   .fields {
     display: flex;
@@ -531,8 +400,6 @@
     box-shadow: 0 0 0 3px oklch(46% 0.10 72 / 0.18);
   }
 
-  /* ── Actions ────────────────────────────────────────── */
-
   .actions {
     display: flex;
     flex-wrap: wrap;
@@ -540,7 +407,6 @@
     padding-top: 0.2rem;
   }
 
-  /* Default = amber primary */
   button {
     padding: 0.4rem 0.85rem;
     border-radius: 4px;
@@ -568,16 +434,6 @@
     background: oklch(55% 0.17 18 / 0.1);
   }
 
-  button.warn {
-    background: transparent;
-    color: var(--c-warn);
-    border-color: oklch(60% 0.12 55 / 0.4);
-  }
-  button.warn:hover {
-    opacity: 1;
-    background: oklch(60% 0.12 55 / 0.1);
-  }
-
   button.ghost {
     background: transparent;
     color: var(--c-muted);
@@ -597,8 +453,6 @@
     color: var(--c-muted);
     border-color: var(--c-border);
   }
-
-  /* ── Log box ─────────────────────────────────────────── */
 
   .logbox {
     border: 1px solid var(--c-border);
@@ -671,8 +525,6 @@
     color: oklch(34% 0.008 65);
     font-style: italic;
   }
-
-  /* ── Responsive ─────────────────────────────────────── */
 
   @media (max-width: 560px) {
     .field {

@@ -6,8 +6,7 @@
 
 - JSON provider (`app.json`)
 - Binary provider + encryption + keyring (`secret.bin`)
-- SQLite provider + keyring (`example-configurate.db`)
-- Batch APIs (`loadAll/saveAll`) と `unlock`
+- Batch APIs (`loadAll` / `saveAll`) と `unlock`
 
 ## 起動方法
 
@@ -18,10 +17,10 @@ pnpm tauri dev
 
 ## 画面で試せる操作
 
-- `seed all`: JSON/Binary/SQLite を一括で作成/保存
-- `loadAll().unlock()`: 3種を一括読込し、keyring項目を復元
-- `saveAll().lock()`: 3種を一括保存し、秘密情報は keyring へ退避
-- `sqlite save/load/delete`: SQLite 単体の挙動確認
+- `seed all`: JSON / Binary を一括で作成・保存
+- `loadAll().unlock()`: 2種を一括読込し、keyring 項目を復元
+- `saveAll().lock()`: 2種を一括保存し、秘密情報は keyring へ退避
+- `delete all`: 両方の設定を削除
 
 ## 主なファイル
 
