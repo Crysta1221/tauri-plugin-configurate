@@ -135,9 +135,9 @@ new Configurate<S>(opts: ConfigurateInit<S>)
 | `fileName` | `string` | Yes | Config file name (no path separators) |
 | `baseDir` | `BaseDirectory` | Yes | Tauri base directory |
 | `provider` | `ConfigurateProvider` | Yes | Storage provider |
-| `options` | `ConfiguratePathOptions?` | No | Path customization |
-| `options.dirName` | `string?` | No | Sub-directory under the resolved `baseDir` (forward-slash segments) |
-| `options.currentPath` | `string?` | No | Sub-directory within root |
+| `options` | `ConfiguratePathOptions?` | No | Path customization (see [Path options](#path-options)) |
+| `options.dirName` | `string?` | No | Relative sub-path under the resolved `baseDir` (`/` or `\` segments) |
+| `options.currentPath` | `string?` | No | Additional relative sub-path under the `dirName` root (or under `baseDir` when `dirName` is omitted) |
 | `validation` | `SchemaValidationOptions?` | No | Schema validation settings |
 | `validation.validateOnWrite` | `boolean` | No | Validate on create/save (default: `false`) |
 | `validation.validateOnRead` | `boolean` | No | Validate on load/unlock (default: `false`) |
@@ -145,6 +145,46 @@ new Configurate<S>(opts: ConfigurateInit<S>)
 | `defaults` | `Partial<InferUnlocked<S>>?` | No | Default values to fill on load |
 | `version` | `number?` | No | Schema version for migration |
 | `migrations` | `MigrationStep[]?` | No | Ordered migration steps |
+
+#### Path options
+
+Config files are resolved as:
+
+```text
+{baseDir}/{dirName?}/{currentPath?}/{fileName}
+```
+
+- **`baseDir`** — Tauri `BaseDirectory` (default allowlist: app-scoped directories). Resolved by the plugin to an absolute path on disk.
+- **`dirName`** — Optional relative path appended **under** `baseDir`. It never replaces the app-identifier segment or escapes the resolved base directory.
+- **`currentPath`** — Optional relative path appended under the `dirName` root (or directly under `baseDir` when `dirName` is omitted).
+
+**Segment rules** (enforced in guest-js and Rust for `fileName`, `dirName`, and `currentPath`):
+
+| Rule | Example (rejected) |
+|------|---------------------|
+| Single component for `fileName` (no separators) | `sub/file.json` |
+| No empty segments | `a//b`, `a\` |
+| No dot-only segments (`.`, `..`, `...`) | `a/../b` |
+| No Windows-forbidden characters (`: * ? " < > \|` and null bytes) | `foo:bar` |
+| Segments must not end with a space or dot | `bad `, `bad.` |
+| `/` and `\` are both accepted as segment separators in `dirName` / `currentPath` | — |
+
+**0.5.1 migration:** Versions before 0.5.1 could resolve `dirName` outside the app sandbox when it replaced the app-identifier directory segment. Upgrade to nested paths under `baseDir`, or pick a `BaseDirectory` that already points at the target folder. See [CHANGELOG](./CHANGELOG.md#051---2026-06-11).
+
+```ts
+// App-scoped nested layout (recommended)
+new Configurate({
+  schema,
+  fileName: "settings.json",
+  baseDir: BaseDirectory.AppConfig,
+  provider: JsonProvider(),
+  options: {
+    dirName: "profiles",
+    currentPath: "v2",
+  },
+});
+// → {AppConfig}/profiles/v2/settings.json
+```
 
 ---
 

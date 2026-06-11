@@ -7,18 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 📚 Documentation
+
+- Document `options.dirName` / `options.currentPath` path rules and the 0.5.1 resolution change in `commands.md` and `README.md`.
+- Add a **Breaking Changes** section to the 0.5.1 release notes for the `dirName` semantics fix.
+
 ## [0.5.1] - 2026-06-11
 
 # 🚀 0.5.1 Release Notes
 
 Security patch for `options.dirName` path resolution.
 
+## ⚠️ Breaking Changes
+
+- `options.dirName` is now always resolved as a **sub-path under** the app-scoped `baseDir` (e.g. `{AppConfig}/my-dir/config.json`). **Before 0.5.1**, when the resolved `baseDir` path ended with the app identifier (e.g. `…/com.example.app`), `dirName` could **replace** that last segment and resolve outside the app sandbox (e.g. `dirName: "Microsoft/Windows/Start Menu/Programs/Startup"` → the system Startup folder). That behavior was removed as a security fix.
+- **Migration:** If you relied on the old replacement semantics to reach a folder outside `baseDir`, choose an appropriate `BaseDirectory` (or opt in via `Builder::allow_any_base_directory` on the Rust side) and set `dirName` / `currentPath` as relative segments under that base. To keep configs under the app directory, use a nested name (e.g. `dirName: "autostart"` → `{AppConfig}/autostart/…`, not the OS autostart folder).
+
 ## 🔒 Security
 
-- `options.dirName` is now always resolved as a sub-path under the app-scoped `baseDir`. Previously, when the base path ended with the app identifier, `dirName` could replace that segment and write outside the app sandbox (e.g. autostart or startup folders).
+- Resolved config paths are checked with canonical path containment after `baseDir` resolution, rejecting symlink escapes outside the app sandbox.
 - Guest-js path validation now mirrors Rust `validate_path_component` rules (`...`, Windows-forbidden characters, trailing space/dot).
 - `dirName` / `currentPath` segment splitting on Rust now accepts both `/` and `\`, matching the TypeScript side.
-- Resolved config paths are checked with canonical path containment after `baseDir` resolution, rejecting symlink escapes outside the app sandbox.
 
 ## 📦 Install
 

@@ -23,7 +23,7 @@ When adding or removing a command, keep these in sync:
 ## Invariants
 
 - **Storage / keyring order** (`src/commands.rs`): write or delete storage first, then keyring writes/deletes (`execute_create` / `save` / `patch` / `delete`).
-- **Validation parity**: mirror rules between `guest-js/configurate.ts` and `src/commands.rs` (`fileName` single component; safe `dirName` / `currentPath`; keyring `id` must not contain `/`).
+- **Validation parity**: mirror rules between `guest-js/configurate.ts` and `src/commands.rs` (`fileName` single component; safe `dirName` / `currentPath`; keyring `id` must not contain `/`). `dirName` is always a sub-path under resolved `baseDir` (never replaces the app-identifier segment); document path rules in `commands.md`.
 - **Change events**: keep `configurate://change` aligned between `src/commands.rs` (`ConfigChangeEvent`, `change_target_id`) and `guest-js/configurate.ts` (`ConfigChangeEvent`, `buildChangeTargetId`).
 - **Keyring reads**: `keyring_pair` with `KeyringEntryUse::Read` rejects non-empty `value`; writes use `KeyringEntryUse::Write`. Keyring unlock goes only through the `unlock` command — `load` rejects `withUnlock` + keyring fields.
 - **Dotpath limits** (`src/dotpath.rs`): max 64 segments, array index ≤ 10,000.

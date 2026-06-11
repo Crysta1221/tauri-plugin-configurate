@@ -111,6 +111,10 @@ const { data } = await config.load().unlock(KEYRING);
 
 See [commands.md](./commands.md) for the full API (batch, patch, export/import, file watching, and more).
 
+### Path layout
+
+Configs resolve to `{baseDir}/{dirName?}/{currentPath?}/{fileName}`. `dirName` and `currentPath` are always relative paths **under** the resolved `baseDir`; they cannot escape the app sandbox or replace the app-identifier directory segment (changed in **0.5.1** — see [Breaking Changes](./CHANGELOG.md#051---2026-06-11)). Segment rules, separators (`/` and `\`), and examples are in [commands.md → Path options](./commands.md#path-options).
+
 ## Configuration
 
 The maximum size of config files and import content defaults to **16 MiB**. You can change it in Rust or in `tauri.conf.json` (`tauri.conf.json` wins when both are set).
