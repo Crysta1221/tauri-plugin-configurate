@@ -77,27 +77,31 @@ fn validate_file_name(name: &str) -> Result<()> {
     validate_path_component(name)
 }
 
-/// Validates a `dir_name` value (forward-slash-separated relative path).
+fn split_path_segments(path: &str) -> impl Iterator<Item = &str> {
+    path.split(|c| c == '/' || c == '\\')
+}
+
+/// Validates a `dir_name` value (forward- or backslash-separated relative path).
 fn validate_dir_name(dir_name: &str) -> Result<()> {
     if dir_name.is_empty() {
         return Err(Error::InvalidPayload(
             "options.dirName must not be empty".to_string(),
         ));
     }
-    for component in dir_name.split('/') {
+    for component in split_path_segments(dir_name) {
         validate_path_component(component)?;
     }
     Ok(())
 }
 
-/// Validates a `currentPath` value (forward-slash-separated relative sub-path within root).
+/// Validates a `currentPath` value (forward- or backslash-separated relative sub-path).
 fn validate_current_path(path: &str) -> Result<()> {
     if path.is_empty() {
         return Err(Error::InvalidPayload(
             "options.currentPath must not be empty".to_string(),
         ));
     }
-    for component in path.split('/') {
+    for component in split_path_segments(path) {
         validate_path_component(component)?;
     }
     Ok(())
@@ -915,6 +919,20 @@ fn is_backup_filename(name: &str) -> bool {
     }
 }
 
+/// Returns `true` when `path` should appear in `list_configs` results.
+fn should_list_config_file(name: &str, path: &std::path::Path, ext: Option<&str>) -> bool {
+    if is_backup_filename(name) {
+        return false;
+    }
+    if name.starts_with('.') && name.ends_with(".tmp") {
+        return false;
+    }
+    match ext {
+        Some(e) => path.extension().is_some_and(|x| x == e),
+        None => true,
+    }
+}
+
 /// Lists config files (by file name) in the resolved root directory.
 #[command]
 pub(crate) async fn list_configs<R: Runtime>(
@@ -944,21 +962,8 @@ pub(crate) async fn list_configs<R: Runtime>(
                 continue;
             }
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                // Skip backup files (e.g. config.json.bak1).
-                if is_backup_filename(name) {
-                    continue;
-                }
-                // Skip temp files.
-                if name.starts_with('.') && name.ends_with(".tmp") {
-                    continue;
-                }
-                match ext {
-                    Some(e) => {
-                        if path.extension().is_some_and(|x| x == e) {
-                            names.push(name.to_string());
-                        }
-                    }
-                    None => names.push(name.to_string()),
+                if should_list_config_file(name, &path, ext) {
+                    names.push(name.to_string());
                 }
             }
         }
@@ -1199,6 +1204,28 @@ mod tests {
     }
 
     #[test]
+    fn resolve_root_path_does_not_replace_identifier_segment() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+        assert_eq!(base.file_name().and_then(|n| n.to_str()), Some("com.example.app"));
+
+        let root = resolve_root_path(&base, Some("shared"), None);
+        assert_eq!(root, base.join("shared"));
+        assert_ne!(root, base.parent().unwrap().join("shared"));
+    }
+
+    #[test]
+    fn resolve_file_path_joins_validated_file_name_under_root() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+        let root = resolve_root_path(&base, Some("configs"), Some("v2"));
+        validate_file_name("app.json").unwrap();
+        let path = root.join("app.json");
+        assert_eq!(
+            path,
+            base.join("configs").join("v2").join("app.json")
+        );
+    }
+
+    #[test]
     fn resolve_root_path_without_dir_name_uses_base() {
         let base = PathBuf::from("/home/user/.config/com.example.app");
         assert_eq!(resolve_root_path(&base, None, None), base);
@@ -1222,6 +1249,11 @@ mod tests {
         assert!(validate_dir_name("").is_err());
         assert!(validate_dir_name("a//b").is_err());
         assert!(validate_dir_name("/a").is_err());
+        assert!(validate_dir_name("a\\").is_err());
+        assert!(validate_dir_name("a\\..\\b").is_err());
+        assert!(validate_dir_name("foo:bar").is_err());
+        assert!(validate_dir_name("bad ").is_err());
+        assert!(validate_dir_name("...").is_err());
     }
 
     #[test]
@@ -1341,20 +1373,23 @@ mod tests {
                 continue;
             }
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if is_backup_filename(name) {
-                    continue;
-                }
-                if name.starts_with('.') && name.ends_with(".tmp") {
-                    continue;
-                }
-                // Simulate JSON-extension filter.
-                if path.extension().is_some_and(|x| x == "json") {
+                if should_list_config_file(name, &path, Some("json")) {
                     names.push(name.to_string());
                 }
             }
         }
         names.sort();
         assert_eq!(names, vec!["alpha.json", "beta.json"]);
+    }
+
+    #[test]
+    fn should_list_config_file_includes_binary_without_extension_filter() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my.bakery.bin");
+        fs::write(&path, b"data").unwrap();
+        assert!(should_list_config_file("my.bakery.bin", &path, None));
+        assert!(!should_list_config_file("my.bakery.bin", &path, Some("json")));
     }
 
     #[test]

@@ -16,6 +16,8 @@ Security patch for `options.dirName` path resolution.
 ## 🔒 Security
 
 - `options.dirName` is now always resolved as a sub-path under the app-scoped `baseDir`. Previously, when the base path ended with the app identifier, `dirName` could replace that segment and write outside the app sandbox (e.g. autostart or startup folders).
+- Guest-js path validation now mirrors Rust `validate_path_component` rules (`...`, Windows-forbidden characters, trailing space/dot).
+- `dirName` / `currentPath` segment splitting on Rust now accepts both `/` and `\`, matching the TypeScript side.
 
 ## 📦 Install
 
