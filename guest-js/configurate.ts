@@ -128,6 +128,43 @@ function resolveValidationOptions(
   };
 }
 
+const FORBIDDEN_PATH_CHARS = /[/\\\0:*?"<>|]/;
+
+function isDotOnlySegment(segment: string): boolean {
+  return segment.length > 0 && [...segment].every((c) => c === ".");
+}
+
+/** Mirrors `validate_path_component` in `src/commands.rs`. */
+function validatePathComponent(component: string, field: string): void {
+  if (!component) {
+    throw new Error(`Configurate: ${field} must not contain empty segments.`);
+  }
+  if (FORBIDDEN_PATH_CHARS.test(component)) {
+    throw new Error(
+      `Configurate: ${field} must not contain path separators or Windows-forbidden characters (: * ? " < > | and null bytes).`,
+    );
+  }
+  if (isDotOnlySegment(component)) {
+    throw new Error(
+      `Configurate: ${field} must not contain dot-only segments (., .., ...).`,
+    );
+  }
+  if (component.endsWith(" ") || component.endsWith(".")) {
+    throw new Error(
+      `Configurate: ${field} must not contain segments ending with a space or dot.`,
+    );
+  }
+}
+
+function validatePathSegments(value: string, field: string): void {
+  if (!value) {
+    throw new Error(`Configurate: ${field} must not be empty.`);
+  }
+  for (const segment of value.split(/[\\/]/)) {
+    validatePathComponent(segment, field);
+  }
+}
+
 function normalizeConfigurateInit<S extends SchemaObject>(
   input: ConfigurateInit<S>,
 ): NormalizedConfigurateInit<S> {
@@ -150,30 +187,13 @@ function normalizeConfigurateInit<S extends SchemaObject>(
     );
   }
 
-  if (fileName.includes("/") || fileName.includes("\\")) {
-    throw new Error(
-      'Configurate: "fileName" must be a single filename and cannot contain path separators.',
-    );
-  }
-  if (fileName === "." || fileName === "..") {
-    throw new Error('Configurate: "fileName" must not be "." or "..".');
-  }
+  validatePathComponent(fileName, '"fileName"');
 
   if (input.options?.dirName !== undefined) {
-    const segments = input.options.dirName.split(/[\\/]/);
-    if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) {
-      throw new Error(
-        'Configurate: "options.dirName" must not contain empty or special segments.',
-      );
-    }
+    validatePathSegments(input.options.dirName, '"options.dirName"');
   }
   if (input.options?.currentPath !== undefined) {
-    const segments = input.options.currentPath.split(/[\\/]/);
-    if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) {
-      throw new Error(
-        'Configurate: "options.currentPath" must not contain empty or special segments.',
-      );
-    }
+    validatePathSegments(input.options.currentPath, '"options.currentPath"');
   }
 
   return {

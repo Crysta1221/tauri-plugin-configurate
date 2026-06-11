@@ -1394,7 +1394,7 @@ describe("Path validation", () => {
           baseDir: 13 as never,
           provider: JsonProvider(),
         }),
-    ).toThrow("cannot contain path separators");
+    ).toThrow("path separators");
   });
 
   it("should reject fileName with backslash", async () => {
@@ -1411,7 +1411,7 @@ describe("Path validation", () => {
           baseDir: 13 as never,
           provider: JsonProvider(),
         }),
-    ).toThrow("cannot contain path separators");
+    ).toThrow("path separators");
   });
 
   it('should reject fileName "."', async () => {
@@ -1428,7 +1428,7 @@ describe("Path validation", () => {
           baseDir: 13 as never,
           provider: JsonProvider(),
         }),
-    ).toThrow('must not be "." or ".."');
+    ).toThrow("dot-only segments");
   });
 
   it('should reject fileName ".."', async () => {
@@ -1445,7 +1445,41 @@ describe("Path validation", () => {
           baseDir: 13 as never,
           provider: JsonProvider(),
         }),
-    ).toThrow('must not be "." or ".."');
+    ).toThrow("dot-only segments");
+  });
+
+  it('should reject fileName "..."', async () => {
+    const { Configurate, JsonProvider, defineConfig } = await loadApi(
+      async () => null,
+    );
+
+    const schema = defineConfig({ theme: String });
+    expect(
+      () =>
+        new Configurate({
+          schema,
+          fileName: "...",
+          baseDir: 13 as never,
+          provider: JsonProvider(),
+        }),
+    ).toThrow("dot-only segments");
+  });
+
+  it("should reject fileName ending with a space", async () => {
+    const { Configurate, JsonProvider, defineConfig } = await loadApi(
+      async () => null,
+    );
+
+    const schema = defineConfig({ theme: String });
+    expect(
+      () =>
+        new Configurate({
+          schema,
+          fileName: "app ",
+          baseDir: 13 as never,
+          provider: JsonProvider(),
+        }),
+    ).toThrow("ending with a space or dot");
   });
 
   it("should reject dirName with empty segments", async () => {
@@ -1463,7 +1497,7 @@ describe("Path validation", () => {
           provider: JsonProvider(),
           options: { dirName: "a//b" },
         }),
-    ).toThrow("must not contain empty or special segments");
+    ).toThrow("empty segments");
   });
 
   it("should reject dirName with '.' segment", async () => {
@@ -1481,7 +1515,7 @@ describe("Path validation", () => {
           provider: JsonProvider(),
           options: { dirName: "a/./b" },
         }),
-    ).toThrow("must not contain empty or special segments");
+    ).toThrow("dot-only segments");
   });
 
   it("should reject dirName with '..' segment", async () => {
@@ -1499,7 +1533,25 @@ describe("Path validation", () => {
           provider: JsonProvider(),
           options: { dirName: "a/../b" },
         }),
-    ).toThrow("must not contain empty or special segments");
+    ).toThrow("dot-only segments");
+  });
+
+  it("should reject dirName with Windows-forbidden characters", async () => {
+    const { Configurate, JsonProvider, defineConfig } = await loadApi(
+      async () => null,
+    );
+
+    const schema = defineConfig({ theme: String });
+    expect(
+      () =>
+        new Configurate({
+          schema,
+          fileName: "app.json",
+          baseDir: 13 as never,
+          provider: JsonProvider(),
+          options: { dirName: "foo:bar" },
+        }),
+    ).toThrow("Windows-forbidden characters");
   });
 
   it("should reject currentPath with '..' segment", async () => {
@@ -1517,7 +1569,7 @@ describe("Path validation", () => {
           provider: JsonProvider(),
           options: { currentPath: "a/../b" },
         }),
-    ).toThrow("must not contain empty or special segments");
+    ).toThrow("dot-only segments");
   });
 
   it("should accept valid dirName and currentPath", async () => {

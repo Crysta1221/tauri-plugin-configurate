@@ -136,7 +136,7 @@ new Configurate<S>(opts: ConfigurateInit<S>)
 | `baseDir` | `BaseDirectory` | Yes | Tauri base directory |
 | `provider` | `ConfigurateProvider` | Yes | Storage provider |
 | `options` | `ConfiguratePathOptions?` | No | Path customization |
-| `options.dirName` | `string?` | No | Replaces app-identifier directory segment |
+| `options.dirName` | `string?` | No | Sub-directory under the resolved `baseDir` (forward-slash segments) |
 | `options.currentPath` | `string?` | No | Sub-directory within root |
 | `validation` | `SchemaValidationOptions?` | No | Schema validation settings |
 | `validation.validateOnWrite` | `boolean` | No | Validate on create/save (default: `false`) |

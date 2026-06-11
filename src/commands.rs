@@ -77,38 +77,100 @@ fn validate_file_name(name: &str) -> Result<()> {
     validate_path_component(name)
 }
 
-/// Validates a `dir_name` value (forward-slash-separated relative path).
+fn split_path_segments(path: &str) -> impl Iterator<Item = &str> {
+    path.split(|c| c == '/' || c == '\\')
+}
+
+/// Validates a `dir_name` value (forward- or backslash-separated relative path).
 fn validate_dir_name(dir_name: &str) -> Result<()> {
     if dir_name.is_empty() {
         return Err(Error::InvalidPayload(
             "options.dirName must not be empty".to_string(),
         ));
     }
-    for component in dir_name.split('/') {
+    for component in split_path_segments(dir_name) {
         validate_path_component(component)?;
     }
     Ok(())
 }
 
-/// Validates a `currentPath` value (forward-slash-separated relative sub-path within root).
+/// Validates a `currentPath` value (forward- or backslash-separated relative sub-path).
 fn validate_current_path(path: &str) -> Result<()> {
     if path.is_empty() {
         return Err(Error::InvalidPayload(
             "options.currentPath must not be empty".to_string(),
         ));
     }
-    for component in path.split('/') {
+    for component in split_path_segments(path) {
         validate_path_component(component)?;
     }
     Ok(())
 }
 
-fn resolve_root<R: Runtime>(
+/// Builds the config root path under a resolved `base` directory.
+///
+/// `dir_name` and `current_path` must already be validated. Paths always stay
+/// under `base`; `dir_name` is a relative sub-path (e.g. `configs/v2`), not a
+/// replacement for the app-identifier segment.
+fn resolve_root_path(
+    base: &std::path::Path,
+    dir_name: Option<&str>,
+    current_path: Option<&str>,
+) -> PathBuf {
+    let root = match dir_name {
+        Some(d) => base.join(d),
+        None => base.to_path_buf(),
+    };
+
+    match current_path {
+        Some(p) => root.join(p),
+        None => root,
+    }
+}
+
+/// Canonicalizes `path`, falling back to the longest existing parent prefix.
+fn canonicalize_path(path: &std::path::Path) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(Error::Storage("invalid empty path".to_string()));
+    }
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(_) => {
+            let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+            match parent {
+                Some(parent) => {
+                    let mut canonical = canonicalize_path(parent)?;
+                    if let Some(name) = path.file_name() {
+                        canonical.push(name);
+                    }
+                    Ok(canonical)
+                }
+                None => Ok(path.to_path_buf()),
+            }
+        }
+    }
+}
+
+/// Ensures `resolved` stays inside `base` after canonicalization (symlink-safe).
+fn ensure_path_within_base(base: &std::path::Path, resolved: &std::path::Path) -> Result<()> {
+    let base = canonicalize_path(base)?;
+    let resolved = canonicalize_path(resolved)?;
+    if !resolved.starts_with(&base) {
+        return Err(Error::InvalidPayload(format!(
+            "resolved path '{}' is outside the allowed base directory '{}'",
+            resolved.display(),
+            base.display()
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_root_paths<R: Runtime>(
     app: &AppHandle<R>,
     base_dir: BaseDirectory,
     dir_name: Option<&str>,
     current_path: Option<&str>,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, PathBuf)> {
     config::validate_base_directory(app, base_dir)?;
     if let Some(d) = dir_name {
         validate_dir_name(d)?;
@@ -122,28 +184,18 @@ fn resolve_root<R: Runtime>(
         .resolve("", base_dir)
         .map_err(|e| Error::Storage(e.to_string()))?;
 
-    // When `dir_name` is provided and the resolved base path ends with the app
-    // identifier (e.g. `%APPDATA%/com.example.app`), replace that last segment.
-    // For directories without an identifier (e.g. Desktop, Home) `dir_name` is
-    // appended as a sub-directory.
-    let root = match dir_name {
-        Some(d) => {
-            let identifier = &app.config().identifier;
-            if base.file_name().is_some_and(|n| n == identifier.as_str()) {
-                base.parent().unwrap_or(&base).join(d)
-            } else {
-                base.join(d)
-            }
-        }
-        None => base,
-    };
+    let root = resolve_root_path(&base, dir_name, current_path);
+    ensure_path_within_base(&base, &root)?;
+    Ok((base, root))
+}
 
-    let parent = match current_path {
-        Some(p) => root.join(p),
-        None => root,
-    };
-
-    Ok(parent)
+fn resolve_root<R: Runtime>(
+    app: &AppHandle<R>,
+    base_dir: BaseDirectory,
+    dir_name: Option<&str>,
+    current_path: Option<&str>,
+) -> Result<PathBuf> {
+    Ok(resolve_root_paths(app, base_dir, dir_name, current_path)?.1)
 }
 
 fn resolve_file_path<R: Runtime>(
@@ -151,13 +203,15 @@ fn resolve_file_path<R: Runtime>(
     payload: &NormalizedConfiguratePayload,
 ) -> Result<PathBuf> {
     validate_file_name(&payload.file_name)?;
-    let root = resolve_root(
+    let (base, root) = resolve_root_paths(
         app,
         payload.base_dir,
         payload.dir_name.as_deref(),
         payload.current_path.as_deref(),
     )?;
-    Ok(root.join(&payload.file_name))
+    let path = root.join(&payload.file_name);
+    ensure_path_within_base(&base, &path)?;
+    Ok(path)
 }
 
 fn keyring_secret_as_value(secret: String) -> Value {
@@ -915,6 +969,20 @@ fn is_backup_filename(name: &str) -> bool {
     }
 }
 
+/// Returns `true` when `path` should appear in `list_configs` results.
+fn should_list_config_file(name: &str, path: &std::path::Path, ext: Option<&str>) -> bool {
+    if is_backup_filename(name) {
+        return false;
+    }
+    if name.starts_with('.') && name.ends_with(".tmp") {
+        return false;
+    }
+    match ext {
+        Some(e) => path.extension().is_some_and(|x| x == e),
+        None => true,
+    }
+}
+
 /// Lists config files (by file name) in the resolved root directory.
 #[command]
 pub(crate) async fn list_configs<R: Runtime>(
@@ -944,21 +1012,8 @@ pub(crate) async fn list_configs<R: Runtime>(
                 continue;
             }
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                // Skip backup files (e.g. config.json.bak1).
-                if is_backup_filename(name) {
-                    continue;
-                }
-                // Skip temp files.
-                if name.starts_with('.') && name.ends_with(".tmp") {
-                    continue;
-                }
-                match ext {
-                    Some(e) => {
-                        if path.extension().is_some_and(|x| x == e) {
-                            names.push(name.to_string());
-                        }
-                    }
-                    None => names.push(name.to_string()),
+                if should_list_config_file(name, &path, ext) {
+                    names.push(name.to_string());
                 }
             }
         }
@@ -1185,6 +1240,110 @@ mod tests {
     }
 
     #[test]
+    fn resolve_root_path_stays_under_base_dir() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+
+        let root = resolve_root_path(&base, Some("autostart"), None);
+        assert_eq!(root, base.join("autostart"));
+        assert!(root.starts_with(&base));
+
+        // Replacing the identifier segment would escape the app sandbox.
+        let escaped = base.parent().unwrap().join("autostart");
+        assert_ne!(root, escaped);
+        assert!(!escaped.starts_with(&base));
+    }
+
+    #[test]
+    fn resolve_root_path_does_not_replace_identifier_segment() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+        assert_eq!(base.file_name().and_then(|n| n.to_str()), Some("com.example.app"));
+
+        let root = resolve_root_path(&base, Some("shared"), None);
+        assert_eq!(root, base.join("shared"));
+        assert_ne!(root, base.parent().unwrap().join("shared"));
+    }
+
+    #[test]
+    fn resolve_file_path_joins_validated_file_name_under_root() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+        let root = resolve_root_path(&base, Some("configs"), Some("v2"));
+        validate_file_name("app.json").unwrap();
+        let path = root.join("app.json");
+        assert_eq!(
+            path,
+            base.join("configs").join("v2").join("app.json")
+        );
+    }
+
+    #[test]
+    fn ensure_path_within_base_accepts_nested_directory() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("app");
+        let nested = base.join("configs").join("v2");
+        fs::create_dir_all(&nested).unwrap();
+        ensure_path_within_base(&base, &nested).unwrap();
+    }
+
+    #[test]
+    fn ensure_path_within_base_rejects_paths_outside_base() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("app");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        assert!(ensure_path_within_base(&base, &outside).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_path_within_base_rejects_symlink_escape() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("app");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, base.join("escape")).unwrap();
+
+        let target = base.join("escape").join("secret.txt");
+        assert!(ensure_path_within_base(&base, &target).is_err());
+    }
+
+    #[test]
+    fn resolve_root_paths_flow_stays_within_base_and_file_path() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("com.example.app");
+        fs::create_dir_all(&base).unwrap();
+
+        let root = resolve_root_path(&base, Some("nested/config"), Some("v2"));
+        ensure_path_within_base(&base, &root).expect("root must stay within base");
+        assert_eq!(root, base.join("nested/config").join("v2"));
+
+        validate_file_name("settings.json").unwrap();
+        let file_path = root.join("settings.json");
+        ensure_path_within_base(&base, &file_path).expect("file path must stay within base");
+    }
+
+    #[test]
+    fn resolve_root_path_without_dir_name_uses_base() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+        assert_eq!(resolve_root_path(&base, None, None), base);
+    }
+
+    #[test]
+    fn resolve_root_path_appends_current_path_under_dir_name() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+        let path = resolve_root_path(&base, Some("configs"), Some("v2/settings"));
+        assert_eq!(path, base.join("configs").join("v2/settings"));
+    }
+
+    #[test]
     fn validate_dir_name_accepts_multi_segment() {
         assert!(validate_dir_name("com/example/app").is_ok());
         assert!(validate_dir_name("my-app").is_ok());
@@ -1195,6 +1354,11 @@ mod tests {
         assert!(validate_dir_name("").is_err());
         assert!(validate_dir_name("a//b").is_err());
         assert!(validate_dir_name("/a").is_err());
+        assert!(validate_dir_name("a\\").is_err());
+        assert!(validate_dir_name("a\\..\\b").is_err());
+        assert!(validate_dir_name("foo:bar").is_err());
+        assert!(validate_dir_name("bad ").is_err());
+        assert!(validate_dir_name("...").is_err());
     }
 
     #[test]
@@ -1314,20 +1478,23 @@ mod tests {
                 continue;
             }
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if is_backup_filename(name) {
-                    continue;
-                }
-                if name.starts_with('.') && name.ends_with(".tmp") {
-                    continue;
-                }
-                // Simulate JSON-extension filter.
-                if path.extension().is_some_and(|x| x == "json") {
+                if should_list_config_file(name, &path, Some("json")) {
                     names.push(name.to_string());
                 }
             }
         }
         names.sort();
         assert_eq!(names, vec!["alpha.json", "beta.json"]);
+    }
+
+    #[test]
+    fn should_list_config_file_includes_binary_without_extension_filter() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my.bakery.bin");
+        fs::write(&path, b"data").unwrap();
+        assert!(should_list_config_file("my.bakery.bin", &path, None));
+        assert!(!should_list_config_file("my.bakery.bin", &path, Some("json")));
     }
 
     #[test]

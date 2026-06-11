@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-11
+
+# 🚀 0.5.1 Release Notes
+
+Security patch for `options.dirName` path resolution.
+
+## 🔒 Security
+
+- `options.dirName` is now always resolved as a sub-path under the app-scoped `baseDir`. Previously, when the base path ended with the app identifier, `dirName` could replace that segment and write outside the app sandbox (e.g. autostart or startup folders).
+- Guest-js path validation now mirrors Rust `validate_path_component` rules (`...`, Windows-forbidden characters, trailing space/dot).
+- `dirName` / `currentPath` segment splitting on Rust now accepts both `/` and `\`, matching the TypeScript side.
+- Resolved config paths are checked with canonical path containment after `baseDir` resolution, rejecting symlink escapes outside the app sandbox.
+
+## 📦 Install
+
+```toml
+tauri-plugin-configurate = "0.5.1"
+```
+
+```sh
+npm add tauri-plugin-configurate-api@0.5.1
+```
+
 ## [0.5.0] - 2026-06-10
 
 # 🚀 0.5.0 Release Notes
@@ -51,5 +74,6 @@ tauri-plugin-configurate = "0.5.0"
 npm add tauri-plugin-configurate-api@0.5.0
 ```
 
-[Unreleased]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.4.2...v0.5.0
