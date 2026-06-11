@@ -122,19 +122,11 @@ fn resolve_root<R: Runtime>(
         .resolve("", base_dir)
         .map_err(|e| Error::Storage(e.to_string()))?;
 
-    // When `dir_name` is provided and the resolved base path ends with the app
-    // identifier (e.g. `%APPDATA%/com.example.app`), replace that last segment.
-    // For directories without an identifier (e.g. Desktop, Home) `dir_name` is
-    // appended as a sub-directory.
+    // Always keep config paths under the resolved base directory. `dir_name` is
+    // a relative sub-path (e.g. `configs/v2`), not a replacement for the
+    // app-identifier segment.
     let root = match dir_name {
-        Some(d) => {
-            let identifier = &app.config().identifier;
-            if base.file_name().is_some_and(|n| n == identifier.as_str()) {
-                base.parent().unwrap_or(&base).join(d)
-            } else {
-                base.join(d)
-            }
-        }
+        Some(d) => base.join(d),
         None => base,
     };
 
@@ -1182,6 +1174,18 @@ mod tests {
         let mut base = json!({"a": "string"});
         deep_merge(&mut base, json!({"a": {"nested": true}}));
         assert_eq!(base, json!({"a": {"nested": true}}));
+    }
+
+    #[test]
+    fn dir_name_resolves_under_base_not_parent() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+        let root = base.join("autostart");
+        assert!(root.starts_with(&base));
+
+        // Replacing the identifier segment would escape the app sandbox.
+        let escaped = base.parent().unwrap().join("autostart");
+        assert_ne!(root, escaped);
+        assert!(!escaped.starts_with(&base));
     }
 
     #[test]
