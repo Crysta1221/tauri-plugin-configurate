@@ -128,12 +128,49 @@ fn resolve_root_path(
     }
 }
 
-fn resolve_root<R: Runtime>(
+/// Canonicalizes `path`, falling back to the longest existing parent prefix.
+fn canonicalize_path(path: &std::path::Path) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(Error::Storage("invalid empty path".to_string()));
+    }
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(_) => {
+            let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+            match parent {
+                Some(parent) => {
+                    let mut canonical = canonicalize_path(parent)?;
+                    if let Some(name) = path.file_name() {
+                        canonical.push(name);
+                    }
+                    Ok(canonical)
+                }
+                None => Ok(path.to_path_buf()),
+            }
+        }
+    }
+}
+
+/// Ensures `resolved` stays inside `base` after canonicalization (symlink-safe).
+fn ensure_path_within_base(base: &std::path::Path, resolved: &std::path::Path) -> Result<()> {
+    let base = canonicalize_path(base)?;
+    let resolved = canonicalize_path(resolved)?;
+    if !resolved.starts_with(&base) {
+        return Err(Error::InvalidPayload(format!(
+            "resolved path '{}' is outside the allowed base directory '{}'",
+            resolved.display(),
+            base.display()
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_root_paths<R: Runtime>(
     app: &AppHandle<R>,
     base_dir: BaseDirectory,
     dir_name: Option<&str>,
     current_path: Option<&str>,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, PathBuf)> {
     config::validate_base_directory(app, base_dir)?;
     if let Some(d) = dir_name {
         validate_dir_name(d)?;
@@ -147,7 +184,18 @@ fn resolve_root<R: Runtime>(
         .resolve("", base_dir)
         .map_err(|e| Error::Storage(e.to_string()))?;
 
-    Ok(resolve_root_path(&base, dir_name, current_path))
+    let root = resolve_root_path(&base, dir_name, current_path);
+    ensure_path_within_base(&base, &root)?;
+    Ok((base, root))
+}
+
+fn resolve_root<R: Runtime>(
+    app: &AppHandle<R>,
+    base_dir: BaseDirectory,
+    dir_name: Option<&str>,
+    current_path: Option<&str>,
+) -> Result<PathBuf> {
+    Ok(resolve_root_paths(app, base_dir, dir_name, current_path)?.1)
 }
 
 fn resolve_file_path<R: Runtime>(
@@ -155,13 +203,15 @@ fn resolve_file_path<R: Runtime>(
     payload: &NormalizedConfiguratePayload,
 ) -> Result<PathBuf> {
     validate_file_name(&payload.file_name)?;
-    let root = resolve_root(
+    let (base, root) = resolve_root_paths(
         app,
         payload.base_dir,
         payload.dir_name.as_deref(),
         payload.current_path.as_deref(),
     )?;
-    Ok(root.join(&payload.file_name))
+    let path = root.join(&payload.file_name);
+    ensure_path_within_base(&base, &path)?;
+    Ok(path)
 }
 
 fn keyring_secret_as_value(secret: String) -> Value {
@@ -1223,6 +1273,61 @@ mod tests {
             path,
             base.join("configs").join("v2").join("app.json")
         );
+    }
+
+    #[test]
+    fn ensure_path_within_base_accepts_nested_directory() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("app");
+        let nested = base.join("configs").join("v2");
+        fs::create_dir_all(&nested).unwrap();
+        ensure_path_within_base(&base, &nested).unwrap();
+    }
+
+    #[test]
+    fn ensure_path_within_base_rejects_paths_outside_base() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("app");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        assert!(ensure_path_within_base(&base, &outside).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_path_within_base_rejects_symlink_escape() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("app");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, base.join("escape")).unwrap();
+
+        let target = base.join("escape").join("secret.txt");
+        assert!(ensure_path_within_base(&base, &target).is_err());
+    }
+
+    #[test]
+    fn resolve_root_paths_flow_stays_within_base_and_file_path() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("com.example.app");
+        fs::create_dir_all(&base).unwrap();
+
+        let root = resolve_root_path(&base, Some("nested/config"), Some("v2"));
+        ensure_path_within_base(&base, &root).expect("root must stay within base");
+        assert_eq!(root, base.join("nested/config").join("v2"));
+
+        validate_file_name("settings.json").unwrap();
+        let file_path = root.join("settings.json");
+        ensure_path_within_base(&base, &file_path).expect("file path must stay within base");
     }
 
     #[test]
