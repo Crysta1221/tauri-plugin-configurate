@@ -103,6 +103,27 @@ fn validate_current_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Builds the config root path under a resolved `base` directory.
+///
+/// `dir_name` and `current_path` must already be validated. Paths always stay
+/// under `base`; `dir_name` is a relative sub-path (e.g. `configs/v2`), not a
+/// replacement for the app-identifier segment.
+fn resolve_root_path(
+    base: &std::path::Path,
+    dir_name: Option<&str>,
+    current_path: Option<&str>,
+) -> PathBuf {
+    let root = match dir_name {
+        Some(d) => base.join(d),
+        None => base.to_path_buf(),
+    };
+
+    match current_path {
+        Some(p) => root.join(p),
+        None => root,
+    }
+}
+
 fn resolve_root<R: Runtime>(
     app: &AppHandle<R>,
     base_dir: BaseDirectory,
@@ -122,20 +143,7 @@ fn resolve_root<R: Runtime>(
         .resolve("", base_dir)
         .map_err(|e| Error::Storage(e.to_string()))?;
 
-    // Always keep config paths under the resolved base directory. `dir_name` is
-    // a relative sub-path (e.g. `configs/v2`), not a replacement for the
-    // app-identifier segment.
-    let root = match dir_name {
-        Some(d) => base.join(d),
-        None => base,
-    };
-
-    let parent = match current_path {
-        Some(p) => root.join(p),
-        None => root,
-    };
-
-    Ok(parent)
+    Ok(resolve_root_path(&base, dir_name, current_path))
 }
 
 fn resolve_file_path<R: Runtime>(
@@ -1177,15 +1185,30 @@ mod tests {
     }
 
     #[test]
-    fn dir_name_resolves_under_base_not_parent() {
+    fn resolve_root_path_stays_under_base_dir() {
         let base = PathBuf::from("/home/user/.config/com.example.app");
-        let root = base.join("autostart");
+
+        let root = resolve_root_path(&base, Some("autostart"), None);
+        assert_eq!(root, base.join("autostart"));
         assert!(root.starts_with(&base));
 
         // Replacing the identifier segment would escape the app sandbox.
         let escaped = base.parent().unwrap().join("autostart");
         assert_ne!(root, escaped);
         assert!(!escaped.starts_with(&base));
+    }
+
+    #[test]
+    fn resolve_root_path_without_dir_name_uses_base() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+        assert_eq!(resolve_root_path(&base, None, None), base);
+    }
+
+    #[test]
+    fn resolve_root_path_appends_current_path_under_dir_name() {
+        let base = PathBuf::from("/home/user/.config/com.example.app");
+        let path = resolve_root_path(&base, Some("configs"), Some("v2/settings"));
+        assert_eq!(path, base.join("configs").join("v2/settings"));
     }
 
     #[test]
