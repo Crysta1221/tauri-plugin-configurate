@@ -7,10 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### 📚 Documentation
+## [0.5.2] - 2026-06-18
 
-- Document `options.dirName` / `options.currentPath` path rules and the 0.5.1 resolution change in `commands.md` and `README.md`.
-- Add a **Breaking Changes** section to the 0.5.1 release notes for the `dirName` semantics fix.
+# 🚀 0.5.2 Release Notes
+
+Patch release fixing npm TypeScript declarations and a guest-js linter warning.
+
+## 🐛 Fixes
+
+- Emit `dist-js/index.d.ts` and `dist-js/provider.d.ts` during the npm build so `package.json` `types` / `exports` resolve correctly (TypeScript 6 + Rollup previously wrote declarations only under `dist-js/guest-js/`).
+- Refactor guest-js path validation to detect NUL bytes without a control-character regex literal, satisfying oxc `no-control-regex`.
+
+## 📦 Install
+
+```toml
+tauri-plugin-configurate = "0.5.2"
+```
+
+```sh
+npm add tauri-plugin-configurate-api@0.5.2
+```
 
 ## [0.5.1] - 2026-06-11
 
@@ -83,6 +99,7 @@ tauri-plugin-configurate = "0.5.0"
 npm add tauri-plugin-configurate-api@0.5.0
 ```
 
-[Unreleased]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.4.2...v0.5.0

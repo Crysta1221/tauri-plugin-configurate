@@ -26,7 +26,7 @@ Install the Rust plugin by adding the following to your `Cargo.toml` file:
 
 ```toml
 [dependencies]
-tauri-plugin-configurate = "0.5.1"
+tauri-plugin-configurate = "0.5.2"
 # alternatively with Git:
 # tauri-plugin-configurate = { git = "https://github.com/Crysta1221/tauri-plugin-configurate" }
 ```
