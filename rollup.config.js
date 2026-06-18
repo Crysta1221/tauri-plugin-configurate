@@ -27,8 +27,10 @@ export default {
   ],
   plugins: [
     typescript({
+      tsconfig: join(cwd(), "tsconfig.build.json"),
       declaration: true,
       declarationDir: dirname(rootExport.import),
+      rootDir: join(cwd(), "guest-js"),
     }),
   ],
   external: [

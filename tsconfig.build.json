@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationDir": "./dist-js",
+    "rootDir": "./guest-js"
+  },
+  "include": ["guest-js/**/*.ts"],
+  "exclude": ["guest-js/**/*.test.ts", "dist-js", "node_modules"]
+}
