@@ -128,7 +128,11 @@ function resolveValidationOptions(
   };
 }
 
-const FORBIDDEN_PATH_CHARS = /[/\\\0:*?"<>|]/;
+const FORBIDDEN_PATH_CHARS = /[/\\:*?"<>|]/;
+
+function containsForbiddenPathChars(component: string): boolean {
+  return FORBIDDEN_PATH_CHARS.test(component) || component.includes("\u0000");
+}
 
 function isDotOnlySegment(segment: string): boolean {
   return segment.length > 0 && [...segment].every((c) => c === ".");
@@ -139,7 +143,7 @@ function validatePathComponent(component: string, field: string): void {
   if (!component) {
     throw new Error(`Configurate: ${field} must not contain empty segments.`);
   }
-  if (FORBIDDEN_PATH_CHARS.test(component)) {
+  if (containsForbiddenPathChars(component)) {
     throw new Error(
       `Configurate: ${field} must not contain path separators or Windows-forbidden characters (: * ? " < > | and null bytes).`,
     );
