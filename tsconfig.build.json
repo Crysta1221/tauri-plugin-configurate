@@ -4,6 +4,7 @@
     "noEmit": false,
     "declaration": true,
     "declarationDir": "./dist-js",
+    "outDir": "./.build",
     "rootDir": "./guest-js"
   },
   "include": ["guest-js/**/*.ts"],

@@ -41,8 +41,8 @@
     }
   },
   "scripts": {
-    "build": "rollup -c",
-    "build:sync": "rollup -c && cd examples/tauri-app && pnpm install",
+    "build": "tsc -p tsconfig.build.json && rollup -c",
+    "build:sync": "bun run build && cd examples/tauri-app && pnpm install",
     "prepublishOnly": "bun run build",
     "pretest": "bun run build",
     "test": "bun test guest-js/*.test.ts",
@@ -52,15 +52,13 @@
     "lint:fix": "oxlint --type-aware --fix"
   },
   "devDependencies": {
-    "@rollup/plugin-typescript": "^12.3.1",
     "@types/bun": "^1.4.4",
     "@types/web": "^0.0.366",
     "oxfmt": "^0.78.0",
     "oxlint": "^1.93.0",
     "oxlint-tsgolint": "^7.0.2007",
     "rollup": "^4.68.3",
-    "tslib": "^2.9.1",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "@tauri-apps/api": "^2.11.0"

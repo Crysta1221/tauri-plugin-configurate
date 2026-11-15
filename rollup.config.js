@@ -1,16 +1,17 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cwd } from "node:process";
-import typescript from "@rollup/plugin-typescript";
 
 const pkg = JSON.parse(readFileSync(join(cwd(), "package.json"), "utf8"));
 
 const rootExport = pkg.exports["."];
 
+// TypeScript 7 has no JS API for a Rollup plugin to call, so `tsc` compiles first (JS into .build, declarations
+// into dist-js) and Rollup only bundles the emitted modules.
 export default {
   input: {
-    index: "guest-js/index.ts",
-    provider: "guest-js/provider.ts",
+    index: ".build/index.js",
+    provider: ".build/provider.js",
   },
   output: [
     {
@@ -24,14 +25,6 @@ export default {
       entryFileNames: "[name].cjs",
       exports: "named",
     },
-  ],
-  plugins: [
-    typescript({
-      tsconfig: join(cwd(), "tsconfig.build.json"),
-      declaration: true,
-      declarationDir: dirname(rootExport.import),
-      rootDir: join(cwd(), "guest-js"),
-    }),
   ],
   external: [
     /^@tauri-apps\/api/,
