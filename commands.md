@@ -47,15 +47,15 @@ const schema = defineConfig({
 
 **Schema value types:**
 
-| Type | Description |
-|------|-------------|
-| `String` | String field |
-| `Number` | Number field (must be finite) |
-| `Boolean` | Boolean field |
-| `keyring(Type, { id })` | OS keyring-protected field |
-| `optional(Type)` | Optional field (may be `undefined` or `null`) |
-| `{ ... }` | Nested object |
-| `[Type]` | Array of a single element type |
+| Type                    | Description                                   |
+| ----------------------- | --------------------------------------------- |
+| `String`                | String field                                  |
+| `Number`                | Number field (must be finite)                 |
+| `Boolean`               | Boolean field                                 |
+| `keyring(Type, { id })` | OS keyring-protected field                    |
+| `optional(Type)`        | Optional field (may be `undefined` or `null`) |
+| `{ ... }`               | Nested object                                 |
+| `[Type]`                | Array of a single element type                |
 
 **Type inference:**
 
@@ -67,23 +67,23 @@ const schema = defineConfig({
 Marks a schema field as keyring-protected.
 
 ```ts
-keyring(String, { id: "my-secret" })
+keyring(String, { id: "my-secret" });
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `typeCtor` | `StringConstructor \| NumberConstructor \| BooleanConstructor` | The value type constructor |
-| `opts.id` | `string` | Unique identifier. Must not be empty or contain `/` |
+| Parameter  | Type                                                           | Description                                         |
+| ---------- | -------------------------------------------------------------- | --------------------------------------------------- |
+| `typeCtor` | `StringConstructor \| NumberConstructor \| BooleanConstructor` | The value type constructor                          |
+| `opts.id`  | `string`                                                       | Unique identifier. Must not be empty or contain `/` |
 
 ### `optional(schema)`
 
 Marks a field as optional. Can wrap primitives, keyring fields, objects, or arrays.
 
 ```ts
-optional(Number)
-optional(keyring(String, { id: "opt-secret" }))
-optional({ host: String, port: Number })
-optional([String])
+optional(Number);
+optional(keyring(String, { id: "opt-secret" }));
+optional({ host: String, port: Number });
+optional([String]);
 ```
 
 ---
@@ -111,15 +111,15 @@ TOML file storage.
 Binary file storage with optional encryption.
 
 ```ts
-BinaryProvider()                                          // Unencrypted (compact JSON bytes)
-BinaryProvider({ encryptionKey: "key" })                  // XChaCha20-Poly1305 with SHA-256 KDF
-BinaryProvider({ encryptionKey: "key", kdf: "argon2" })   // XChaCha20-Poly1305 with Argon2id KDF
+BinaryProvider(); // Unencrypted (compact JSON bytes)
+BinaryProvider({ encryptionKey: "key" }); // XChaCha20-Poly1305 with SHA-256 KDF
+BinaryProvider({ encryptionKey: "key", kdf: "argon2" }); // XChaCha20-Poly1305 with Argon2id KDF
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `encryptionKey` | `string?` | `undefined` | Encryption key. Omit for unencrypted |
-| `kdf` | `"sha256" \| "argon2"` | `"sha256"` | Key derivation function |
+| Option          | Type                   | Default     | Description                          |
+| --------------- | ---------------------- | ----------- | ------------------------------------ |
+| `encryptionKey` | `string?`              | `undefined` | Encryption key. Omit for unencrypted |
+| `kdf`           | `"sha256" \| "argon2"` | `"sha256"`  | Key derivation function              |
 
 ## Configurate Class
 
@@ -129,22 +129,22 @@ BinaryProvider({ encryptionKey: "key", kdf: "argon2" })   // XChaCha20-Poly1305 
 new Configurate<S>(opts: ConfigurateInit<S>)
 ```
 
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `schema` | `S` | Yes | Schema object from `defineConfig()` |
-| `fileName` | `string` | Yes | Config file name (no path separators) |
-| `baseDir` | `BaseDirectory` | Yes | Tauri base directory |
-| `provider` | `ConfigurateProvider` | Yes | Storage provider |
-| `options` | `ConfiguratePathOptions?` | No | Path customization (see [Path options](#path-options)) |
-| `options.dirName` | `string?` | No | Relative sub-path under the resolved `baseDir` (`/` or `\` segments) |
-| `options.currentPath` | `string?` | No | Additional relative sub-path under the `dirName` root (or under `baseDir` when `dirName` is omitted) |
-| `validation` | `SchemaValidationOptions?` | No | Schema validation settings |
-| `validation.validateOnWrite` | `boolean` | No | Validate on create/save (default: `false`) |
-| `validation.validateOnRead` | `boolean` | No | Validate on load/unlock (default: `false`) |
-| `validation.allowUnknownKeys` | `boolean` | No | Allow undeclared keys (default: `false`) |
-| `defaults` | `Partial<InferUnlocked<S>>?` | No | Default values to fill on load |
-| `version` | `number?` | No | Schema version for migration |
-| `migrations` | `MigrationStep[]?` | No | Ordered migration steps |
+| Option                        | Type                         | Required | Description                                                                                          |
+| ----------------------------- | ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `schema`                      | `S`                          | Yes      | Schema object from `defineConfig()`                                                                  |
+| `fileName`                    | `string`                     | Yes      | Config file name (no path separators)                                                                |
+| `baseDir`                     | `BaseDirectory`              | Yes      | Tauri base directory                                                                                 |
+| `provider`                    | `ConfigurateProvider`        | Yes      | Storage provider                                                                                     |
+| `options`                     | `ConfiguratePathOptions?`    | No       | Path customization (see [Path options](#path-options))                                               |
+| `options.dirName`             | `string?`                    | No       | Relative sub-path under the resolved `baseDir` (`/` or `\` segments)                                 |
+| `options.currentPath`         | `string?`                    | No       | Additional relative sub-path under the `dirName` root (or under `baseDir` when `dirName` is omitted) |
+| `validation`                  | `SchemaValidationOptions?`   | No       | Schema validation settings                                                                           |
+| `validation.validateOnWrite`  | `boolean`                    | No       | Validate on create/save (default: `false`)                                                           |
+| `validation.validateOnRead`   | `boolean`                    | No       | Validate on load/unlock (default: `false`)                                                           |
+| `validation.allowUnknownKeys` | `boolean`                    | No       | Allow undeclared keys (default: `false`)                                                             |
+| `defaults`                    | `Partial<InferUnlocked<S>>?` | No       | Default values to fill on load                                                                       |
+| `version`                     | `number?`                    | No       | Schema version for migration                                                                         |
+| `migrations`                  | `MigrationStep[]?`           | No       | Ordered migration steps                                                                              |
 
 #### Path options
 
@@ -160,14 +160,14 @@ Config files are resolved as:
 
 **Segment rules** (enforced in guest-js and Rust for `fileName`, `dirName`, and `currentPath`):
 
-| Rule | Example (rejected) |
-|------|---------------------|
-| Single component for `fileName` (no separators) | `sub/file.json` |
-| No empty segments | `a//b`, `a\` |
-| No dot-only segments (`.`, `..`, `...`) | `a/../b` |
-| No Windows-forbidden characters (`: * ? " < > \|` and null bytes) | `foo:bar` |
-| Segments must not end with a space or dot | `bad `, `bad.` |
-| `/` and `\` are both accepted as segment separators in `dirName` / `currentPath` | — |
+| Rule                                                                             | Example (rejected) |
+| -------------------------------------------------------------------------------- | ------------------ |
+| Single component for `fileName` (no separators)                                  | `sub/file.json`    |
+| No empty segments                                                                | `a//b`, `a\`       |
+| No dot-only segments (`.`, `..`, `...`)                                          | `a/../b`           |
+| No Windows-forbidden characters (`: * ? " < > \|` and null bytes)                | `foo:bar`          |
+| Segments must not end with a space or dot                                        | `bad `, `bad.`     |
+| `/` and `\` are both accepted as segment separators in `dirName` / `currentPath` | —                  |
 
 **0.5.1 migration:** Versions before 0.5.1 could resolve `dirName` outside the app sandbox when it replaced the app-identifier directory segment. Upgrade to nested paths under `baseDir`, or pick a `BaseDirectory` that already points at the target folder. See [CHANGELOG](./CHANGELOG.md#051---2026-06-11).
 
@@ -212,11 +212,11 @@ const unlocked = await entry.unlock(keyringOpts);
 
 **Returns:** `LazyConfigEntry<S>`
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `.run()` | `Promise<LockedConfig<S>>` | Execute and return locked data |
-| `.lock(opts).run()` | `Promise<LockedConfig<S>>` | Store secrets in keyring, return locked data |
-| `.unlock(opts)` | `Promise<UnlockedConfig<S>>` | Store secrets in keyring, return unlocked data |
+| Method              | Returns                      | Description                                    |
+| ------------------- | ---------------------------- | ---------------------------------------------- |
+| `.run()`            | `Promise<LockedConfig<S>>`   | Execute and return locked data                 |
+| `.lock(opts).run()` | `Promise<LockedConfig<S>>`   | Store secrets in keyring, return locked data   |
+| `.unlock(opts)`     | `Promise<UnlockedConfig<S>>` | Store secrets in keyring, return unlocked data |
 
 ---
 
@@ -246,7 +246,8 @@ const unlocked2 = await locked.unlock(keyringOpts);
 Overwrites an existing config file completely.
 
 ```ts
-await config.save({ theme: "light", database: { host: "db.example.com", password: "new-secret" } })
+await config
+  .save({ theme: "light", database: { host: "db.example.com", password: "new-secret" } })
   .lock(keyringOpts)
   .run();
 ```
@@ -293,12 +294,12 @@ const unlocked = await entry.unlock(keyringOpts);
 
 **Returns:** `LazyPatchEntry<S>`
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `.run()` | `Promise<PatchedConfig<S>>` | Execute patch, return locked result |
-| `.lock(opts).run()` | `Promise<PatchedConfig<S>>` | Patch with keyring, return locked result |
-| `.createIfMissing()` | `this` | Create config if not found instead of throwing |
-| `.unlock(opts)` | `Promise<UnlockedConfig<S>>` | Patch with keyring, return unlocked result |
+| Method               | Returns                      | Description                                    |
+| -------------------- | ---------------------------- | ---------------------------------------------- |
+| `.run()`             | `Promise<PatchedConfig<S>>`  | Execute patch, return locked result            |
+| `.lock(opts).run()`  | `Promise<PatchedConfig<S>>`  | Patch with keyring, return locked result       |
+| `.createIfMissing()` | `this`                       | Create config if not found instead of throwing |
+| `.unlock(opts)`      | `Promise<UnlockedConfig<S>>` | Patch with keyring, return unlocked result     |
 
 ---
 
@@ -324,11 +325,11 @@ const unlocked = await entry.unlock(keyringOpts);
 
 **Returns:** `LazyResetEntry<S>`
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `.run()` | `Promise<LockedConfig<S>>` | Reset and return locked data |
-| `.lock(opts).run()` | `Promise<LockedConfig<S>>` | Reset with keyring, return locked data |
-| `.unlock(opts)` | `Promise<UnlockedConfig<S>>` | Reset with keyring, return unlocked data |
+| Method              | Returns                      | Description                              |
+| ------------------- | ---------------------------- | ---------------------------------------- |
+| `.run()`            | `Promise<LockedConfig<S>>`   | Reset and return locked data             |
+| `.lock(opts).run()` | `Promise<LockedConfig<S>>`   | Reset with keyring, return locked data   |
+| `.unlock(opts)`     | `Promise<UnlockedConfig<S>>` | Reset with keyring, return unlocked data |
 
 ---
 
@@ -369,10 +370,10 @@ const tomlStr = await config.exportAs("toml");
 const yamlWithSecrets = await config.exportAs("yml", keyringOpts);
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `format` | `"json" \| "yml" \| "toml"` | Target serialization format |
-| `keyringOpts` | `KeyringOptions?` | When provided, keyring fields are unlocked before export |
+| Parameter     | Type                        | Description                                              |
+| ------------- | --------------------------- | -------------------------------------------------------- |
+| `format`      | `"json" \| "yml" \| "toml"` | Target serialization format                              |
+| `keyringOpts` | `KeyringOptions?`           | When provided, keyring fields are unlocked before export |
 
 **Returns:** `Promise<string>`
 
@@ -386,11 +387,11 @@ await config.importFrom("theme: dark\n", "yml");
 await config.importFrom('theme = "dark"\n', "toml", keyringOpts);
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `content` | `string` | Serialized config string |
-| `format` | `"json" \| "yml" \| "toml"` | Source format |
-| `keyringOpts` | `KeyringOptions?` | Required to import decrypted values for schemas that use `keyring()` |
+| Parameter     | Type                        | Description                                                          |
+| ------------- | --------------------------- | -------------------------------------------------------------------- |
+| `content`     | `string`                    | Serialized config string                                             |
+| `format`      | `"json" \| "yml" \| "toml"` | Source format                                                        |
+| `keyringOpts` | `KeyringOptions?`           | Required to import decrypted values for schemas that use `keyring()` |
 
 **Returns:** `Promise<void>`
 
@@ -420,7 +421,7 @@ Validates partial config data against the schema. Only provided keys are checked
 
 ```ts
 config.validatePartial({ theme: "dark" }); // OK
-config.validatePartial({ theme: 123 });    // throws
+config.validatePartial({ theme: 123 }); // throws
 ```
 
 ---
@@ -461,9 +462,9 @@ unlisten();
 
 ```ts
 interface ConfigChangeEvent {
-  fileName: string;   // Config file name
-  operation: string;  // "create" | "save" | "patch" | "delete" | "reset" | "import" | "external_change"
-  targetId: string;   // Unique identifier for this config target
+  fileName: string; // Config file name
+  operation: string; // "create" | "save" | "patch" | "delete" | "reset" | "import" | "external_change"
+  targetId: string; // Unique identifier for this config target
 }
 ```
 
@@ -483,7 +484,7 @@ const result = await Configurate.loadAll([
   { id: "app", config: appConfig },
   { id: "secret", config: secretConfig },
 ])
-  .unlock("secret", keyringOpts)    // unlock specific entry
+  .unlock("secret", keyringOpts) // unlock specific entry
   // .unlockAll(keyringOpts)         // or unlock all entries
   .run();
 
@@ -501,7 +502,7 @@ const result = await Configurate.saveAll([
   { id: "app", config: appConfig, data: { theme: "dark" } },
   { id: "secret", config: secretConfig, data: { token: "tok" } },
 ])
-  .lock("secret", keyringOpts)     // lock specific entry
+  .lock("secret", keyringOpts) // lock specific entry
   // .lockAll(keyringOpts)          // or lock all entries
   .run();
 ```
@@ -539,8 +540,8 @@ Wrapper for config data with keyring fields populated. Access is revoked after c
 
 ```ts
 class UnlockedConfig<S> {
-  get data(): InferUnlocked<S>;  // throws after lock()
-  lock(): void;                  // revokes access to data
+  get data(): InferUnlocked<S>; // throws after lock()
+  lock(): void; // revokes access to data
 }
 ```
 
@@ -562,16 +563,15 @@ interface BatchRunResult {
 }
 
 type BatchRunEntryResult =
-  | { ok: true; data: unknown }
-  | { ok: false; error: { kind: string; message: string } };
+  { ok: true; data: unknown } | { ok: false; error: { kind: string; message: string } };
 ```
 
 ### `KeyringOptions`
 
 ```ts
 interface KeyringOptions {
-  service: string;  // Keyring service name (e.g. your app name)
-  account: string;  // Keyring account name (e.g. "default")
+  service: string; // Keyring service name (e.g. your app name)
+  account: string; // Keyring account name (e.g. "default")
 }
 ```
 
@@ -600,10 +600,10 @@ const changes = configDiff(
 
 ```ts
 interface DiffEntry {
-  path: string;                           // Dot-separated path
-  type: "added" | "removed" | "changed";  // Kind of change
-  oldValue?: unknown;                     // Previous value (for "removed" and "changed")
-  newValue?: unknown;                     // New value (for "added" and "changed")
+  path: string; // Dot-separated path
+  type: "added" | "removed" | "changed"; // Kind of change
+  oldValue?: unknown; // Previous value (for "removed" and "changed")
+  newValue?: unknown; // New value (for "added" and "changed")
 }
 ```
 
@@ -617,8 +617,8 @@ Used with the `version` and `migrations` options for schema versioning.
 
 ```ts
 interface MigrationStep<TData> {
-  version: number;          // The version this migration upgrades FROM
-  up: (data: TData) => TData;  // Transform function
+  version: number; // The version this migration upgrades FROM
+  up: (data: TData) => TData; // Transform function
 }
 ```
 
@@ -633,7 +633,13 @@ const config = new Configurate({
   version: 2,
   migrations: [
     { version: 0, up: (data) => ({ ...data, newField: "default" }) },
-    { version: 1, up: (data) => { delete data.oldField; return data; } },
+    {
+      version: 1,
+      up: (data) => {
+        delete data.oldField;
+        return data;
+      },
+    },
   ],
 });
 ```

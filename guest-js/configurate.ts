@@ -46,14 +46,10 @@ function validateKeyringOptions(opts: KeyringOptions): void {
     throw new Error('Configurate: keyring "account" must not be empty.');
   }
   if (/\p{Cc}/u.test(opts.service)) {
-    throw new Error(
-      'Configurate: keyring "service" must not contain control characters.',
-    );
+    throw new Error('Configurate: keyring "service" must not contain control characters.');
   }
   if (/\p{Cc}/u.test(opts.account)) {
-    throw new Error(
-      'Configurate: keyring "account" must not contain control characters.',
-    );
+    throw new Error('Configurate: keyring "account" must not contain control characters.');
   }
 }
 
@@ -149,14 +145,10 @@ function validatePathComponent(component: string, field: string): void {
     );
   }
   if (isDotOnlySegment(component)) {
-    throw new Error(
-      `Configurate: ${field} must not contain dot-only segments (., .., ...).`,
-    );
+    throw new Error(`Configurate: ${field} must not contain dot-only segments (., .., ...).`);
   }
   if (component.endsWith(" ") || component.endsWith(".")) {
-    throw new Error(
-      `Configurate: ${field} must not contain segments ending with a space or dot.`,
-    );
+    throw new Error(`Configurate: ${field} must not contain segments ending with a space or dot.`);
   }
 }
 
@@ -205,10 +197,7 @@ function normalizeConfigurateInit<S extends SchemaObject>(
     fileName,
     baseDir,
     provider,
-    options:
-      input.options?.dirName || input.options?.currentPath
-        ? input.options
-        : undefined,
+    options: input.options?.dirName || input.options?.currentPath ? input.options : undefined,
     validation: resolveValidationOptions(input.validation),
     defaults: input.defaults,
     version: input.version,
@@ -258,10 +247,7 @@ interface BatchConfigLike {
   ): Promise<void>;
   _postProcessLoadedData(data: unknown): Promise<unknown>;
   _validateLoadedData(data: unknown): void;
-  _unlockLoadedData(
-    data: unknown,
-    keyringOpts: KeyringOptions,
-  ): Promise<unknown>;
+  _unlockLoadedData(data: unknown, keyringOpts: KeyringOptions): Promise<unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,10 +267,7 @@ export class LockedConfig<S extends SchemaObject> {
 
   async unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
     validateKeyringOptions(opts);
-    return this._configurate._unlockFromData(
-      this.data as Record<string, unknown>,
-      opts,
-    );
+    return this._configurate._unlockFromData(this.data as Record<string, unknown>, opts);
   }
 }
 
@@ -307,9 +290,7 @@ export class UnlockedConfig<S extends SchemaObject> {
 
   get data(): InferUnlocked<S> {
     if (this._data === null) {
-      throw new Error(
-        "Cannot access data after lock() has been called. Load or unlock again.",
-      );
+      throw new Error("Cannot access data after lock() has been called. Load or unlock again.");
     }
     return this._data;
   }
@@ -344,11 +325,7 @@ export class LazyConfigEntry<S extends SchemaObject> {
   }
 
   run(): Promise<LockedConfig<S>> {
-    return this._configurate._executeLocked(
-      this._op,
-      this._data,
-      this._keyringOpts,
-    );
+    return this._configurate._executeLocked(this._op, this._data, this._keyringOpts);
   }
 
   unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
@@ -395,11 +372,7 @@ export class LazyPatchEntry<S extends SchemaObject> {
 
   unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
     validateKeyringOptions(opts);
-    return this._configurate._executePatchUnlock(
-      this._data,
-      opts,
-      this._createIfMissing,
-    );
+    return this._configurate._executePatchUnlock(this._data, opts, this._createIfMissing);
   }
 }
 
@@ -497,10 +470,7 @@ class LoadAllBuilder {
       }),
     };
 
-    const batchResult = await invoke<BatchRunResult>(
-      "plugin:configurate|load_all",
-      { payload },
-    );
+    const batchResult = await invoke<BatchRunResult>("plugin:configurate|load_all", { payload });
 
     await Promise.all(
       this._entries.map(async (entry) => {
@@ -548,10 +518,7 @@ class LoadAllBuilder {
         }
 
         try {
-          const unlockedData = await entry.config._unlockLoadedData(
-            result.data,
-            unlockOpts,
-          );
+          const unlockedData = await entry.config._unlockLoadedData(result.data, unlockOpts);
           batchResult.results[entry.id] = { ok: true, data: unlockedData };
         } catch (error) {
           batchResult.results[entry.id] = {
@@ -615,10 +582,7 @@ class SaveAllBuilder {
           false,
           false,
         );
-        await entry.config._attachFullReplaceKeyringDeletes(
-          entryPayload,
-          lockOpts,
-        );
+        await entry.config._attachFullReplaceKeyringDeletes(entryPayload, lockOpts);
         payloadEntries.push({
           id: entry.id,
           payload: entryPayload,
@@ -636,10 +600,7 @@ class SaveAllBuilder {
     }
 
     const payload = { entries: payloadEntries };
-    const backendResult = await invoke<BatchRunResult>(
-      "plugin:configurate|save_all",
-      { payload },
-    );
+    const backendResult = await invoke<BatchRunResult>("plugin:configurate|save_all", { payload });
     return {
       results: {
         ...backendResult.results,
@@ -725,10 +686,7 @@ class PatchAllBuilder {
     }
 
     const payload = { entries: payloadEntries };
-    const backendResult = await invoke<BatchRunResult>(
-      "plugin:configurate|patch_all",
-      { payload },
-    );
+    const backendResult = await invoke<BatchRunResult>("plugin:configurate|patch_all", { payload });
     return {
       results: {
         ...backendResult.results,
@@ -861,16 +819,11 @@ export class Configurate<S extends SchemaObject> {
    * @param format - Target format: "json", "yml", or "toml"
    * @returns The serialized config string
    */
-  async exportAs(
-    format: "json" | "yml" | "toml",
-    opts?: KeyringOptions | null,
-  ): Promise<string> {
+  async exportAs(format: "json" | "yml" | "toml", opts?: KeyringOptions | null): Promise<string> {
     if (opts) {
       validateKeyringOptions(opts);
     }
-    const loaded = opts
-      ? await this.load().unlock(opts)
-      : await this.load().run();
+    const loaded = opts ? await this.load().unlock(opts) : await this.load().run();
     const payload = {
       source: {
         ...this._buildBasePayload({ includeEncryptionKey: false }),
@@ -906,13 +859,7 @@ export class Configurate<S extends SchemaObject> {
         parseOnly: true,
       },
     });
-    const targetPayload = this._buildPayload(
-      "save",
-      parsed,
-      opts ?? null,
-      false,
-      false,
-    );
+    const targetPayload = this._buildPayload("save", parsed, opts ?? null, false, false);
     await this._attachFullReplaceKeyringDeletes(targetPayload, opts ?? null);
     await invoke("plugin:configurate|import_config", {
       payload: {
@@ -928,11 +875,7 @@ export class Configurate<S extends SchemaObject> {
    * @throws Error if validation fails
    */
   validate(data: InferUnlocked<S>): void {
-    assertDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   /**
@@ -942,11 +885,7 @@ export class Configurate<S extends SchemaObject> {
    * @throws Error if validation fails
    */
   validatePartial(data: Partial<InferUnlocked<S>>): void {
-    assertPartialDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertPartialDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   /**
@@ -974,9 +913,7 @@ export class Configurate<S extends SchemaObject> {
    * Registers a callback that fires whenever this config file is changed
    * (create, save, patch, delete). Returns an unlisten function.
    */
-  async onChange(
-    callback: (event: ConfigChangeEvent) => void,
-  ): Promise<() => void> {
+  async onChange(callback: (event: ConfigChangeEvent) => void): Promise<() => void> {
     return tauriListen<ConfigChangeEvent>("configurate://change", (event) => {
       if (event.payload.targetId === this._changeTargetId) {
         callback(event.payload);
@@ -1005,22 +942,17 @@ export class Configurate<S extends SchemaObject> {
    * Returns an async stop function that unregisters the listener and
    * calls `unwatch_file`.
    */
-  async watchExternal(
-    callback: (event: ConfigChangeEvent) => void,
-  ): Promise<() => Promise<void>> {
+  async watchExternal(callback: (event: ConfigChangeEvent) => void): Promise<() => Promise<void>> {
     const payload = this._buildLocationPayload();
     // Register JS listener first to avoid losing events.
-    const unlisten = await tauriListen<ConfigChangeEvent>(
-      "configurate://change",
-      (event) => {
-        if (
-          event.payload.targetId === this._changeTargetId &&
-          event.payload.operation === "external_change"
-        ) {
-          callback(event.payload);
-        }
-      },
-    );
+    const unlisten = await tauriListen<ConfigChangeEvent>("configurate://change", (event) => {
+      if (
+        event.payload.targetId === this._changeTargetId &&
+        event.payload.operation === "external_change"
+      ) {
+        callback(event.payload);
+      }
+    });
     try {
       await invoke("plugin:configurate|watch_file", { payload });
     } catch (e) {
@@ -1029,9 +961,7 @@ export class Configurate<S extends SchemaObject> {
     }
     return async () => {
       unlisten();
-      await invoke("plugin:configurate|unwatch_file", { payload }).catch(
-        () => {},
-      );
+      await invoke("plugin:configurate|unwatch_file", { payload }).catch(() => {});
     };
   }
 
@@ -1043,23 +973,16 @@ export class Configurate<S extends SchemaObject> {
     const payload = this._buildPayload("delete", undefined, null, false);
 
     if (keyringOpts !== null && this._hasKeyringFields) {
-      let keyringEntries = this._keyringPaths.map(
-        ({ id, dotpath, isOptional }) => ({
-          id,
-          dotpath,
-          value: "",
-          ...(isOptional ? { isOptional: true } : {}),
-        }),
-      );
+      let keyringEntries = this._keyringPaths.map(({ id, dotpath, isOptional }) => ({
+        id,
+        dotpath,
+        value: "",
+        ...(isOptional ? { isOptional: true } : {}),
+      }));
 
       if (this._hasArrayKeyring) {
         try {
-          const loadPayload = this._buildPayload(
-            "load",
-            undefined,
-            null,
-            false,
-          );
+          const loadPayload = this._buildPayload("load", undefined, null, false);
           const plainData = await invoke<unknown>("plugin:configurate|load", {
             payload: loadPayload,
           });
@@ -1110,14 +1033,12 @@ export class Configurate<S extends SchemaObject> {
     }
 
     const existingIds = new Set(
-      collectKeyringReadEntries(this._schema, existingPlainData).map(
-        (entry) => entry.id,
-      ),
+      collectKeyringReadEntries(this._schema, existingPlainData).map((entry) => entry.id),
     );
     const nextIds = new Set(
-      (
-        (payload.keyringEntries as Array<{ id: string }> | undefined) ?? []
-      ).map((entry) => entry.id),
+      ((payload.keyringEntries as Array<{ id: string }> | undefined) ?? []).map(
+        (entry) => entry.id,
+      ),
     );
     const deleteIds = [...existingIds].filter((id) => !nextIds.has(id));
 
@@ -1162,10 +1083,7 @@ export class Configurate<S extends SchemaObject> {
       didMigrate = migrationResult.didMigrate;
     }
     if (this._opts.defaults) {
-      result = deepMergeDefaults(
-        result,
-        this._opts.defaults as Record<string, unknown>,
-      );
+      result = deepMergeDefaults(result, this._opts.defaults as Record<string, unknown>);
     }
     return { result, didMigrate };
   }
@@ -1197,15 +1115,10 @@ export class Configurate<S extends SchemaObject> {
   ): Promise<LockedConfig<S>> {
     if (op === "load") {
       const payload = this._buildPayload(op, data, keyringOpts, false);
-      const rawResult = await invoke<Record<string, unknown>>(
-        `plugin:configurate|${op}`,
-        {
-          payload,
-        },
-      );
-      const result = (await this._postProcessLoadedData(
-        rawResult,
-      )) as Record<string, unknown>;
+      const rawResult = await invoke<Record<string, unknown>>(`plugin:configurate|${op}`, {
+        payload,
+      });
+      const result = (await this._postProcessLoadedData(rawResult)) as Record<string, unknown>;
       this._validateLoadedData(result);
       return new LockedConfig(result as InferLocked<S>, this);
     }
@@ -1228,15 +1141,10 @@ export class Configurate<S extends SchemaObject> {
   ): Promise<UnlockedConfig<S>> {
     if (op === "load") {
       const payload = this._buildPayload("load", data, null, false);
-      const rawPlain = await invoke<Record<string, unknown>>(
-        "plugin:configurate|load",
-        {
-          payload,
-        },
-      );
-      const result = (await this._postProcessLoadedData(
-        rawPlain,
-      )) as Record<string, unknown>;
+      const rawPlain = await invoke<Record<string, unknown>>("plugin:configurate|load", {
+        payload,
+      });
+      const result = (await this._postProcessLoadedData(rawPlain)) as Record<string, unknown>;
       return this._unlockFromData(result, keyringOpts);
     }
 
@@ -1254,13 +1162,7 @@ export class Configurate<S extends SchemaObject> {
     keyringOpts: KeyringOptions | null,
     createIfMissing = false,
   ): Promise<PatchedConfig<S>> {
-    const payload = this._buildPayload(
-      "patch",
-      data,
-      keyringOpts,
-      false,
-      false,
-    );
+    const payload = this._buildPayload("patch", data, keyringOpts, false, false);
     if (createIfMissing) payload.createIfMissing = true;
     await invoke("plugin:configurate|patch", { payload });
     const plain = (payload.data ?? {}) as Partial<InferLocked<S>>;
@@ -1282,10 +1184,7 @@ export class Configurate<S extends SchemaObject> {
   }
 
   /** @internal */
-  async _unlockLoadedData(
-    data: unknown,
-    keyringOpts: KeyringOptions,
-  ): Promise<unknown> {
+  async _unlockLoadedData(data: unknown, keyringOpts: KeyringOptions): Promise<unknown> {
     this._validateLoadedData(data);
     if (!isPlainObject(data)) {
       return data;
@@ -1299,33 +1198,21 @@ export class Configurate<S extends SchemaObject> {
     if (!this._opts.validation.validateOnRead) {
       return;
     }
-    assertDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   private _validateWriteData(data: unknown): void {
     if (!this._opts.validation.validateOnWrite) {
       return;
     }
-    assertDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   private _validatePatchData(data: unknown): void {
     if (!this._opts.validation.validateOnWrite) {
       return;
     }
-    assertPartialDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertPartialDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   /** @internal */
@@ -1394,11 +1281,7 @@ export class Configurate<S extends SchemaObject> {
   ): Record<string, unknown> {
     const base: Record<string, unknown> = {
       ...this._buildBasePayload({
-        includeEncryptionKey:
-          op === "load" ||
-          op === "create" ||
-          op === "save" ||
-          op === "patch",
+        includeEncryptionKey: op === "load" || op === "create" || op === "save" || op === "patch",
       }),
       withUnlock,
       returnData,
@@ -1411,14 +1294,12 @@ export class Configurate<S extends SchemaObject> {
       (op === "patch" && data === undefined)
     ) {
       if (keyringOpts && this._keyringPaths.length > 0) {
-        base.keyringEntries = this._keyringPaths.map(
-          ({ id, dotpath, isOptional }) => ({
-            id,
-            dotpath,
-            value: "",
-            ...(isOptional ? { isOptional: true } : {}),
-          }),
-        );
+        base.keyringEntries = this._keyringPaths.map(({ id, dotpath, isOptional }) => ({
+          id,
+          dotpath,
+          value: "",
+          ...(isOptional ? { isOptional: true } : {}),
+        }));
         base.keyringOptions = keyringOpts;
       }
       return base;
@@ -1433,7 +1314,10 @@ export class Configurate<S extends SchemaObject> {
       // Work on a shallow copy to avoid mutating the caller's data object.
       let writeData = data;
       if (this._opts.version !== undefined && isPlainObject(data)) {
-        writeData = { ...(data as Record<string, unknown>), [CONFIGURATE_VERSION_KEY]: this._opts.version };
+        writeData = {
+          ...(data as Record<string, unknown>),
+          [CONFIGURATE_VERSION_KEY]: this._opts.version,
+        };
       }
       if (!this._hasKeyringFields) {
         // No keyring fields — skip the deep clone in separateSecrets.
@@ -1513,10 +1397,7 @@ export function configDiff(
 
   const entries: DiffEntry[] = [];
 
-  const allKeys = new Set([
-    ...Object.keys(oldData),
-    ...Object.keys(newData),
-  ]);
+  const allKeys = new Set([...Object.keys(oldData), ...Object.keys(newData)]);
 
   for (const key of allKeys) {
     const path = prefix ? `${prefix}.${key}` : key;

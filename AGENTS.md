@@ -4,9 +4,9 @@ Desktop only (Linux / Windows / macOS). Android and iOS are not supported.
 
 ## Tooling
 
-| Location | Package manager |
-| --- | --- |
-| Repository root | `bun` (`bun.lock`) |
+| Location             | Package manager           |
+| -------------------- | ------------------------- |
+| Repository root      | `bun` (`bun.lock`)        |
 | `examples/tauri-app` | `pnpm` (`pnpm-lock.yaml`) |
 
 ## Commands & permissions
@@ -51,15 +51,19 @@ Each version block uses Keep a Changelog version headers plus release-note secti
 One-line summary of the release.
 
 ## ⚠️ Breaking Changes
+
 - Use backticks for `types`, `functions()`, and file names.
 
 ## ✨ Features
+
 - New behavior and enhancements.
 
 ## 🐛 Fixes
+
 - Bug fixes (omit section if none).
 
 ## 🔒 Security
+
 - Security hardening (omit section if none).
 ```
 
@@ -76,10 +80,10 @@ Pushing a `v*` tag runs `.github/workflows/release.yml`: verify versions → tes
 
 ### Publishing credentials
 
-| Target | Method |
-| --- | --- |
-| crates.io | GitHub Secret `CARGO_REGISTRY_TOKEN` |
-| npm | [Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC; no `NPM_TOKEN`) |
+| Target    | Method                                                                                  |
+| --------- | --------------------------------------------------------------------------------------- |
+| crates.io | GitHub Secret `CARGO_REGISTRY_TOKEN`                                                    |
+| npm       | [Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC; no `NPM_TOKEN`) |
 
 npm Trusted Publisher on npmjs.com must match this repo (`Crysta1221/tauri-plugin-configurate`) and workflow filename `release.yml`. The workflow sets `id-token: write` for OIDC.
 

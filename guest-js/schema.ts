@@ -49,10 +49,7 @@ export function keyring<T, Id extends string>(
       `keyring() id '${opts.id}' must not contain '/' (it is used as a separator in the keyring user string).`,
     );
   }
-  const field = { _type: undefined as unknown as T, _id: opts.id } as Record<
-    string,
-    unknown
-  >;
+  const field = { _type: undefined as unknown as T, _id: opts.id } as Record<string, unknown>;
   field[KEYRING_BRAND_KEY] = true;
   if (isPrimitiveConstructor(typeCtor)) {
     field[KEYRING_RUNTIME_TYPE_KEY] = typeCtor;
@@ -107,10 +104,7 @@ export function optional<V extends OptionalInner>(schema: V): OptionalField<V> {
 // Schema definition
 // ---------------------------------------------------------------------------
 
-type PrimitiveConstructor =
-  | StringConstructor
-  | NumberConstructor
-  | BooleanConstructor;
+type PrimitiveConstructor = StringConstructor | NumberConstructor | BooleanConstructor;
 
 type InferPrimitive<C> = C extends StringConstructor
   ? string
@@ -120,10 +114,7 @@ type InferPrimitive<C> = C extends StringConstructor
       ? boolean
       : never;
 
-type SchemaArrayElement =
-  | PrimitiveConstructor
-  | KeyringField<unknown, string>
-  | SchemaObject;
+type SchemaArrayElement = PrimitiveConstructor | KeyringField<unknown, string> | SchemaObject;
 
 export type SchemaArray = readonly [SchemaArrayElement];
 
@@ -154,8 +145,7 @@ export type CollectKeyringIds<S extends SchemaObject> = {
         : never;
 }[keyof S];
 
-type IsDuplicate<T extends string, All extends string> =
-  T extends Exclude<All, T> ? true : false;
+type IsDuplicate<T extends string, All extends string> = T extends Exclude<All, T> ? true : false;
 
 export type HasDuplicateKeyringIds<S extends SchemaObject> = true extends {
   [Id in CollectKeyringIds<S>]: IsDuplicate<Id, CollectKeyringIds<S>>;
@@ -268,9 +258,7 @@ export function defineConfig<S extends SchemaObject>(
 // ---------------------------------------------------------------------------
 
 /** A single migration step that transforms config data from one version to the next. */
-export interface MigrationStep<
-  TData extends Record<string, unknown> = Record<string, unknown>,
-> {
+export interface MigrationStep<TData extends Record<string, unknown> = Record<string, unknown>> {
   /** The version this migration upgrades FROM. */
   version: number;
   /** Transform function. Receives data at `version`, must return data at `version+1`. */
