@@ -2229,3 +2229,69 @@ describe("Configurate.list (static)", () => {
     expect(args.payload.fileName).toBe("x.json");
   });
 });
+
+describe("isNotFoundError", () => {
+  it("is true only for the structured io/not_found error", async () => {
+    const { isNotFoundError } = await loadApi(async () => null);
+
+    expect(isNotFoundError({ kind: "io", message: "missing", io_kind: "not_found" })).toBe(true);
+    expect(isNotFoundError({ kind: "io", message: "denied", io_kind: "permission_denied" })).toBe(
+      false,
+    );
+    expect(isNotFoundError({ kind: "storage", message: "expected value at line 1" })).toBe(false);
+    expect(isNotFoundError({ kind: "keyring", message: "No matching entry found" })).toBe(false);
+    expect(isNotFoundError(new Error("not found"))).toBe(false);
+    expect(isNotFoundError(null)).toBe(false);
+    expect(isNotFoundError("not found")).toBe(false);
+  });
+
+  it("tells a missing file from a broken one through load() rejections", async () => {
+    const { Configurate, JsonProvider, defineConfig, isNotFoundError } = await loadApi(
+      async (_command, args) => {
+        const payload = (args?.payload ?? {}) as { fileName?: string };
+        if (payload.fileName === "missing.json") {
+          throw { kind: "io", message: "No such file", io_kind: "not_found" };
+        }
+        throw { kind: "json", message: "EOF while parsing" };
+      },
+    );
+    const make = (fileName: string) =>
+      new Configurate({
+        schema: defineConfig({ theme: String }),
+        fileName,
+        baseDir: 13 as never,
+        provider: JsonProvider(),
+      });
+
+    const missing = await make("missing.json")
+      .load()
+      .run()
+      .catch((e: unknown) => e);
+    const broken = await make("broken.json")
+      .load()
+      .run()
+      .catch((e: unknown) => e);
+    expect(isNotFoundError(missing)).toBe(true);
+    expect(isNotFoundError(broken)).toBe(false);
+  });
+
+  it("keeps io_kind in loadAll results", async () => {
+    const { Configurate, JsonProvider, defineConfig, isNotFoundError } = await loadApi(
+      async () => ({
+        results: {
+          a: { ok: false, error: { kind: "io", message: "missing", io_kind: "not_found" } },
+        },
+      }),
+    );
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "a.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    const result = await Configurate.loadAll([{ id: "a", config }]).run();
+    const entry = result.results.a;
+    expect(entry?.ok).toBe(false);
+    if (entry && !entry.ok) expect(isNotFoundError(entry.error)).toBe(true);
+  });
+});

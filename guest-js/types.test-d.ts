@@ -4,6 +4,8 @@
 
 import { defineConfig, keyring, optional } from "./schema";
 import type { InferLocked, InferUnlocked } from "./schema";
+import { isNotFoundError } from "./configurate";
+import type { BatchRunEntryResult, ConfigurateError, ConfigurateErrorKind } from "./configurate";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -78,3 +80,28 @@ export type OptionalKeyringTests = [
 ];
 
 export const omitsOptionalKeyring: InferUnlocked<typeof secretSchema> = {};
+
+// ---------------------------------------------------------------------------
+// Error shape
+// ---------------------------------------------------------------------------
+
+// Known kinds autocomplete; other strings stay accepted (not a breaking change).
+export const knownKind: ConfigurateErrorKind = "schema_validation";
+export const futureKind: ConfigurateErrorKind = "some_future_kind";
+
+type BatchError = Extract<BatchRunEntryResult, { ok: false }>["error"];
+export type ErrorShapeTests = [
+  Expect<Equal<BatchError, ConfigurateError>>,
+  Expect<Equal<BatchError["kind"], ConfigurateErrorKind>>,
+  // Existing code that reads `kind` as a string keeps compiling.
+  Expect<BatchError["kind"] extends string ? true : false>,
+];
+
+export function narrowsNotFound(error: unknown): "not_found" | undefined {
+  if (isNotFoundError(error)) {
+    const kind: "io" = error.kind;
+    void kind;
+    return error.io_kind;
+  }
+  return undefined;
+}

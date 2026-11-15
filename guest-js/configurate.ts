@@ -266,9 +266,77 @@ function buildChangeTargetId(
 // Result types
 // ---------------------------------------------------------------------------
 
+/**
+ * Error kinds a caller can see.
+ *
+ * - From Rust (`src/error.rs`): `io`, `storage`, `keyring`, `dotpath`,
+ *   `invalid_payload`, `json`, `plugin_invoke` (mobile only), and `unknown`
+ *   when a batch error cannot be serialized.
+ * - From the guest in batch results: `post_load_failed`, `schema_validation`,
+ *   `unlock_failed`, `payload_build_failed`, `unknown`.
+ *
+ * Other strings are accepted so new kinds are not a breaking change.
+ */
+export type ConfigurateErrorKind =
+  | "io"
+  | "storage"
+  | "keyring"
+  | "dotpath"
+  | "invalid_payload"
+  | "json"
+  | "plugin_invoke"
+  | "post_load_failed"
+  | "schema_validation"
+  | "unlock_failed"
+  | "payload_build_failed"
+  | "unknown"
+  | (string & {});
+
+/** `io_kind` values sent with `kind: "io"` errors (from `std::io::ErrorKind`). */
+export type ConfigurateIoErrorKind =
+  | "not_found"
+  | "permission_denied"
+  | "already_exists"
+  | "would_block"
+  | "invalid_input"
+  | "timed_out"
+  | "interrupted"
+  | "out_of_memory"
+  | "other"
+  | (string & {});
+
+/**
+ * Error object rejected by plugin commands and stored in batch results.
+ *
+ * Rust command errors reject with this plain object (not an `Error`
+ * instance). Guest-side failures of single calls (schema validation, payload
+ * checks) are thrown as `Error` instances instead; batch results convert them
+ * to this shape.
+ */
+export interface ConfigurateError {
+  kind: ConfigurateErrorKind;
+  message: string;
+  /** Present only when `kind` is `"io"`. */
+  io_kind?: ConfigurateIoErrorKind;
+}
+
+/**
+ * Returns true when `error` is the plugin's "file does not exist" error
+ * (`kind: "io"`, `io_kind: "not_found"`), as rejected by `load()` on a
+ * missing file or reported in a `loadAll()` result. A file that exists but
+ * cannot be parsed or decrypted reports another kind (`storage`, `json`, ...).
+ */
+export function isNotFoundError(
+  error: unknown,
+): error is ConfigurateError & { kind: "io"; io_kind: "not_found" } {
+  if (typeof error !== "object" || error === null) return false;
+  const e = error as Record<string, unknown>;
+  return e.kind === "io" && e.io_kind === "not_found" && typeof e.message === "string";
+}
+
 export type BatchRunEntryResult =
   | { ok: true; data: unknown }
-  | { ok: false; error: { kind: string; message: string } };
+  | { ok: false; error: ConfigurateError };
 
 export interface BatchRunResult {
   results: Record<string, BatchRunEntryResult>;
