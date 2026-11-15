@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen as tauriListen } from "@tauri-apps/api/event";
-export { BaseDirectory } from "@tauri-apps/api/path";
-import type { BaseDirectory } from "@tauri-apps/api/path";
+import { BaseDirectory } from "@tauri-apps/api/path";
 import {
   CONFIGURATE_VERSION_KEY,
   isPlainObject,
@@ -28,6 +27,10 @@ import type {
 } from "./schema";
 import { isProvider } from "./provider";
 import type { ConfigurateProvider } from "./provider";
+
+// Import then re-export instead of `export { BaseDirectory } from`: next to a type-only import of the same name,
+// the bundled declarations marked `BaseDirectory` as a type, which broke `BaseDirectory.AppConfig` for consumers.
+export { BaseDirectory };
 
 // ---------------------------------------------------------------------------
 // Keyring options
