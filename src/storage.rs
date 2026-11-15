@@ -620,6 +620,110 @@ mod tests {
         DEFAULT_MAX_READ_BYTES
     }
 
+    /// Writes `{"zeta", "alpha": {"b", "a"}, "mid"}` with `backend` and
+    /// returns the file text plus the keys read back, in order.
+    fn write_unordered(backend: &dyn StorageBackend, name: &str) -> (String, Vec<String>) {
+        let dir = TempDir::new().unwrap();
+        let path = tmp_path(&dir, name);
+        let mut data = serde_json::Map::new();
+        data.insert("zeta".into(), json!(1));
+        let mut nested = serde_json::Map::new();
+        nested.insert("b".into(), json!(1));
+        nested.insert("a".into(), json!(2));
+        data.insert("alpha".into(), Value::Object(nested));
+        data.insert("mid".into(), json!(true));
+        backend.write(&path, &Value::Object(data)).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let keys = match backend.read(&path).unwrap() {
+            Value::Object(map) => map.keys().cloned().collect(),
+            other => panic!("expected object, got {other}"),
+        };
+        (text, keys)
+    }
+
+    fn all_backends() -> Vec<(Box<dyn StorageBackend>, &'static str)> {
+        let (backup, max_read_bytes) = (false, max_read());
+        vec![
+            (
+                Box::new(JsonBackend {
+                    backup,
+                    registry: reg(),
+                    max_read_bytes,
+                }),
+                "o.json",
+            ),
+            (
+                Box::new(YamlBackend {
+                    backup,
+                    registry: reg(),
+                    max_read_bytes,
+                }),
+                "o.yml",
+            ),
+            (
+                Box::new(TomlBackend {
+                    backup,
+                    registry: reg(),
+                    max_read_bytes,
+                }),
+                "o.toml",
+            ),
+            (
+                Box::new(BinaryBackend {
+                    backup,
+                    registry: reg(),
+                    max_read_bytes,
+                }),
+                "o.bin",
+            ),
+        ]
+    }
+
+    /// Asserts that `first` appears before `second` in the written text.
+    fn assert_before(text: &str, first: &str, second: &str, name: &str) {
+        let find = |needle: &str| text.find(needle).expect(needle);
+        assert!(find(first) < find(second), "{name}: {text}");
+    }
+
+    /// Needles for the nested keys `a` and `b` in each format.
+    fn nested_needles(name: &str) -> (&'static str, &'static str) {
+        match name {
+            "o.yml" => ("  a:", "  b:"),
+            "o.toml" => ("\na =", "\nb ="),
+            _ => ("\"a\"", "\"b\""),
+        }
+    }
+
+    #[cfg(not(feature = "preserve-order"))]
+    #[test]
+    fn keys_are_sorted_by_default() {
+        for (backend, name) in all_backends() {
+            let (text, keys) = write_unordered(backend.as_ref(), name);
+            assert_eq!(keys, ["alpha", "mid", "zeta"], "{name}");
+            assert_before(&text, "mid", "zeta", name);
+            let (a, b) = nested_needles(name);
+            assert_before(&text, a, b, name);
+        }
+    }
+
+    #[cfg(feature = "preserve-order")]
+    #[test]
+    fn keys_keep_insertion_order_with_preserve_order() {
+        for (backend, name) in all_backends() {
+            let (text, keys) = write_unordered(backend.as_ref(), name);
+            if name == "o.toml" {
+                // TOML writes plain keys before tables, so `[alpha]` moves last.
+                assert_eq!(keys, ["zeta", "mid", "alpha"], "{name}");
+            } else {
+                assert_eq!(keys, ["zeta", "alpha", "mid"], "{name}");
+                assert_before(&text, "alpha", "mid", name);
+            }
+            assert_before(&text, "zeta", "mid", name);
+            let (a, b) = nested_needles(name);
+            assert_before(&text, b, a, name);
+        }
+    }
+
     #[test]
     fn json_roundtrip() {
         let dir = TempDir::new().unwrap();

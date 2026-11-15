@@ -34,6 +34,13 @@ notify-debouncer-mini = "0.4"
 zeroize = "1.8"
 tempfile = "3"
 
+[features]
+# Write object keys in insertion order instead of sorting them alphabetically
+# (JSON, YAML, TOML and Binary files). Off by default: Cargo unifies features,
+# so this also switches `serde_json::Map` and `toml::map::Map` to insertion
+# order for every crate in the consumer's build.
+preserve-order = ["serde_json/preserve_order", "toml/preserve_order"]
+
 [build-dependencies]
 tauri-plugin = { version = "2.5.4", features = ["build"] }
 

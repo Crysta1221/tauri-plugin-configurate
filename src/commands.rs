@@ -1242,6 +1242,30 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "preserve-order")]
+    #[test]
+    fn deep_merge_keeps_stored_order_and_appends_new_keys() {
+        let mut base: Value =
+            serde_json::from_str(r#"{"z": 1, "db": {"port": 1, "host": "h"}, "a": 2}"#).unwrap();
+        let patch = r#"{"new": 0, "db": {"name": "n", "port": 2}, "z": 3}"#;
+        deep_merge(&mut base, serde_json::from_str(patch).unwrap());
+        assert_eq!(
+            serde_json::to_string(&base).unwrap(),
+            r#"{"z":3,"db":{"port":2,"host":"h","name":"n"},"a":2,"new":0}"#
+        );
+    }
+
+    #[cfg(not(feature = "preserve-order"))]
+    #[test]
+    fn deep_merge_output_is_sorted_by_default() {
+        let mut base: Value = serde_json::from_str(r#"{"z": 1, "a": 2}"#).unwrap();
+        deep_merge(&mut base, serde_json::from_str(r#"{"m": 0}"#).unwrap());
+        assert_eq!(
+            serde_json::to_string(&base).unwrap(),
+            r#"{"a":2,"m":0,"z":1}"#
+        );
+    }
+
     #[test]
     fn deep_merge_replaces_non_object_with_object() {
         let mut base = json!({"a": "string"});
