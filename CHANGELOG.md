@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Configurate.loadAll()` / `saveAll()` / `patchAll()` accept more than 128 entries: the guest splits the list into consecutive calls of at most 128 entries (the per-call limit in Rust is unchanged) and merges the results. When a split batch has a failed call, its ids are reported as failed entries (kind `batch_call_failed` unless the error is structured) instead of discarding the other calls' results.
 - Added the opt-in `preserve-order` Cargo feature to write object keys in insertion order instead of alphabetically.
 - Documented the per-command `configurate:allow-*` permissions, `defaults` merge rules, the error shape, and that `save()` creates missing parent directories and `delete()` succeeds when the file is absent.
-- Updated `toml` to 1.x and `notify-debouncer-mini` to 0.7. Existing TOML files are read unchanged; a file rewritten by this version may be laid out differently (arrays of tables after tables, fewer escapes in multi-line strings).
+- Updated `toml` to 1.x. Existing TOML files are read unchanged; a file rewritten by this version may be laid out differently (arrays of tables after tables, fewer escapes in multi-line strings).
 
 ## 🐛 Fixes
 

@@ -30,7 +30,7 @@ rand = "0.10"
 sha2 = "0.10"
 argon2 = "0.5"
 toml = "1"
-notify-debouncer-mini = "0.7"
+notify-debouncer-mini = "0.4"
 zeroize = "1.8"
 tempfile = "3"
 
