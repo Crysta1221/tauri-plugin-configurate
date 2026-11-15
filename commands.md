@@ -564,7 +564,7 @@ interface ConfigChangeEvent {
 
 #### `Configurate.loadAll(entries)`
 
-Loads multiple configs in a single IPC call.
+Loads multiple configs with one IPC call per 128 entries (see [Batch size](#batch-size)).
 
 Batch loads apply the same post-load defaults and migration processing as
 `config.load()`.
@@ -585,7 +585,7 @@ if (result.results.app.ok) {
 
 #### `Configurate.saveAll(entries)`
 
-Saves multiple configs in a single IPC call.
+Saves multiple configs with one IPC call per 128 entries (see [Batch size](#batch-size)).
 
 ```ts
 const result = await Configurate.saveAll([
@@ -599,7 +599,7 @@ const result = await Configurate.saveAll([
 
 #### `Configurate.patchAll(entries)`
 
-Patches multiple configs in a single IPC call.
+Patches multiple configs with one IPC call per 128 entries (see [Batch size](#batch-size)).
 
 ```ts
 const result = await Configurate.patchAll([
@@ -607,6 +607,27 @@ const result = await Configurate.patchAll([
 ])
   .lock("app", keyringOpts)
   .run();
+```
+
+#### Batch size
+
+One IPC call carries at most **128 entries** (the plugin's load limit per call). The batch builders accept longer lists and split them for you:
+
+- Ids are checked over the whole list first: an empty or duplicated id throws before anything is sent.
+- The list is sent as consecutive calls of at most 128 entries, one after another (never in parallel), and the per-id results are merged into one `BatchRunResult`. Migrations, defaults, validation and `unlock` run for every entry as usual.
+- A list of 128 entries or fewer is one call, and a failure of that call rejects `run()` as before.
+- When the list is split, a failed call does not discard the results of the other calls. Every id of the failed call gets `{ ok: false, error }` with the call's error; its `kind` is `batch_call_failed` when the rejection was not a `ConfigurateError` (for example a missing permission). Calls after a failed one are still sent.
+
+```ts
+const names = await Configurate.list({
+  baseDir: BaseDirectory.AppData,
+  provider: JsonProvider(),
+  options: { dirName: "sessions" },
+});
+const result = await Configurate.loadAll(
+  // sessionConfig(fileName) returns a Configurate for that file
+  names.map((fileName) => ({ id: fileName, config: sessionConfig(fileName) })),
+).run(); // 300 files → 3 calls (128 + 128 + 44)
 ```
 
 ---
@@ -680,20 +701,21 @@ interface ConfigurateError {
 }
 ```
 
-| `kind`                 | Source        | Meaning                                                         |
-| ---------------------- | ------------- | --------------------------------------------------------------- |
-| `io`                   | Rust          | File system error; see `io_kind`                                |
-| `storage`              | Rust          | The file could not be parsed, decrypted or serialized           |
-| `json`                 | Rust          | `serde_json` error (for example invalid JSON in a `.json` file) |
-| `keyring`              | Rust          | OS keyring error                                                |
-| `dotpath`              | Rust          | Invalid keyring field path                                      |
-| `invalid_payload`      | Rust          | Rejected request (bad path, `patch` on a missing file, ...)     |
-| `plugin_invoke`        | Rust (mobile) | Mobile plugin error (mobile is not supported)                   |
-| `unknown`              | Rust / guest  | Error that could not be classified                              |
-| `post_load_failed`     | guest, batch  | Migration or defaults failed after `loadAll()` read the file    |
-| `schema_validation`    | guest, batch  | `validateOnRead` failed for a `loadAll()` entry                 |
-| `unlock_failed`        | guest, batch  | Keyring unlock failed for a `loadAll()` entry                   |
-| `payload_build_failed` | guest, batch  | `saveAll()` / `patchAll()` entry was rejected before IPC        |
+| `kind`                 | Source        | Meaning                                                          |
+| ---------------------- | ------------- | ---------------------------------------------------------------- |
+| `io`                   | Rust          | File system error; see `io_kind`                                 |
+| `storage`              | Rust          | The file could not be parsed, decrypted or serialized            |
+| `json`                 | Rust          | `serde_json` error (for example invalid JSON in a `.json` file)  |
+| `keyring`              | Rust          | OS keyring error                                                 |
+| `dotpath`              | Rust          | Invalid keyring field path                                       |
+| `invalid_payload`      | Rust          | Rejected request (bad path, `patch` on a missing file, ...)      |
+| `plugin_invoke`        | Rust (mobile) | Mobile plugin error (mobile is not supported)                    |
+| `unknown`              | Rust / guest  | Error that could not be classified                               |
+| `post_load_failed`     | guest, batch  | Migration or defaults failed after `loadAll()` read the file     |
+| `schema_validation`    | guest, batch  | `validateOnRead` failed for a `loadAll()` entry                  |
+| `unlock_failed`        | guest, batch  | Keyring unlock failed for a `loadAll()` entry                    |
+| `payload_build_failed` | guest, batch  | `saveAll()` / `patchAll()` entry was rejected before IPC         |
+| `batch_call_failed`    | guest, batch  | One call of a split batch failed (see [Batch size](#batch-size)) |
 
 `io_kind` is one of `not_found`, `permission_denied`, `already_exists`, `would_block`, `invalid_input`, `timed_out`, `interrupted`, `out_of_memory`, `other`. Both `ConfigurateErrorKind` and `ConfigurateIoErrorKind` also accept other strings, so new kinds can be added without a breaking change.
 

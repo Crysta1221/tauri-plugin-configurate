@@ -268,7 +268,7 @@ function buildChangeTargetId(init: ConfigurateListOptions & { fileName: string }
  *   `invalid_payload`, `json`, `plugin_invoke` (mobile only), and `unknown`
  *   when a batch error cannot be serialized.
  * - From the guest in batch results: `post_load_failed`, `schema_validation`,
- *   `unlock_failed`, `payload_build_failed`, `unknown`.
+ *   `unlock_failed`, `payload_build_failed`, `batch_call_failed`, `unknown`.
  *
  * Other strings are accepted so new kinds are not a breaking change.
  */
@@ -284,6 +284,7 @@ export type ConfigurateErrorKind =
   | "schema_validation"
   | "unlock_failed"
   | "payload_build_failed"
+  | "batch_call_failed"
   | "unknown"
   | (string & {});
 
@@ -335,6 +336,45 @@ export type BatchRunEntryResult =
 
 export interface BatchRunResult {
   results: Record<string, BatchRunEntryResult>;
+}
+
+/** Mirrors `MAX_BATCH_ENTRIES` in `src/commands.rs`: entries per `*_all` IPC call. */
+const MAX_BATCH_ENTRIES = 128;
+
+type BatchPayloadEntry = { id: string; payload: Record<string, unknown> };
+
+/**
+ * Runs a `*_all` command over `entries`, at most `MAX_BATCH_ENTRIES` per IPC
+ * call. Calls run one after another (never in parallel) so the per-call load
+ * bound in Rust still holds for the whole list.
+ *
+ * A list that fits in one call behaves as before: a failed call rejects.
+ * When the list is split, a failed call does not discard the other calls'
+ * results; each id of that call is reported as failed with the call's error
+ * (`batch_call_failed` when the rejection is not a `ConfigurateError`).
+ */
+async function invokeBatch(
+  command: string,
+  entries: BatchPayloadEntry[],
+): Promise<Record<string, BatchRunEntryResult>> {
+  if (entries.length <= MAX_BATCH_ENTRIES) {
+    const result = await invoke<BatchRunResult>(command, { payload: { entries } });
+    return result.results;
+  }
+  const results: Record<string, BatchRunEntryResult> = {};
+  for (let start = 0; start < entries.length; start += MAX_BATCH_ENTRIES) {
+    const chunk = entries.slice(start, start + MAX_BATCH_ENTRIES);
+    try {
+      const result = await invoke<BatchRunResult>(command, { payload: { entries: chunk } });
+      Object.assign(results, result.results);
+    } catch (error) {
+      const failure = toBatchError(error, "batch_call_failed");
+      for (const entry of chunk) {
+        results[entry.id] = { ok: false, error: { ...failure } };
+      }
+    }
+  }
+  return results;
 }
 
 interface BatchConfigLike {
@@ -565,16 +605,16 @@ class LoadAllBuilder {
   }
 
   async run(): Promise<BatchRunResult> {
-    const payload = {
-      entries: this._entries.map((entry) => {
-        return {
-          id: entry.id,
-          payload: entry.config._buildPayload("load", undefined, null, false),
-        };
-      }),
-    };
+    const entries = this._entries.map((entry) => {
+      return {
+        id: entry.id,
+        payload: entry.config._buildPayload("load", undefined, null, false),
+      };
+    });
 
-    const batchResult = await invoke<BatchRunResult>("plugin:configurate|load_all", { payload });
+    const batchResult: BatchRunResult = {
+      results: await invokeBatch("plugin:configurate|load_all", entries),
+    };
 
     await Promise.all(
       this._entries.map(async (entry) => {
@@ -697,11 +737,10 @@ class SaveAllBuilder {
       return { results: preflightResults };
     }
 
-    const payload = { entries: payloadEntries };
-    const backendResult = await invoke<BatchRunResult>("plugin:configurate|save_all", { payload });
+    const backendResults = await invokeBatch("plugin:configurate|save_all", payloadEntries);
     return {
       results: {
-        ...backendResult.results,
+        ...backendResults,
         ...preflightResults,
       },
     };
@@ -777,11 +816,10 @@ class PatchAllBuilder {
       return { results: preflightResults };
     }
 
-    const payload = { entries: payloadEntries };
-    const backendResult = await invoke<BatchRunResult>("plugin:configurate|patch_all", { payload });
+    const backendResults = await invokeBatch("plugin:configurate|patch_all", payloadEntries);
     return {
       results: {
-        ...backendResult.results,
+        ...backendResults,
         ...preflightResults,
       },
     };

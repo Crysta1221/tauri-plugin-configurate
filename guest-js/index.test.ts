@@ -2609,3 +2609,204 @@ describe("Value markers: schema checks", () => {
     ]);
   });
 });
+
+describe("Batch chunking", () => {
+  type BatchArgs = {
+    payload: { entries: Array<{ id: string; payload: Record<string, unknown> }> };
+  };
+
+  function batchCalls(invokeMock: { mock: { calls: unknown[][] } }, command: string) {
+    return (invokeMock.mock.calls as Array<[string, BatchArgs]>).filter(([cmd]) => cmd === command);
+  }
+
+  const ids = (count: number) => Array.from({ length: count }, (_, i) => `e${i}`);
+
+  it("loadAll splits more than 128 entries into consecutive calls and merges the results", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { Configurate, JsonProvider, defineConfig, invokeMock } = await loadApi(
+      async (command, args) => {
+        expect(command).toBe("plugin:configurate|load_all");
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Promise.resolve();
+        inFlight--;
+        const { entries } = (args as BatchArgs).payload;
+        return {
+          results: Object.fromEntries(
+            entries.map((e) => [e.id, { ok: true, data: { theme: e.id } }]),
+          ),
+        };
+      },
+    );
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    const all = ids(300);
+    const result = await Configurate.loadAll(all.map((id) => ({ id, config }))).run();
+
+    const calls = batchCalls(invokeMock, "plugin:configurate|load_all");
+    expect(calls.map(([, a]) => a.payload.entries.length)).toEqual([128, 128, 44]);
+    expect(calls.flatMap(([, a]) => a.payload.entries.map((e) => e.id))).toEqual(all);
+    expect(maxInFlight).toBe(1);
+    expect(Object.keys(result.results)).toHaveLength(300);
+    expect(result.results.e299).toEqual({ ok: true, data: { theme: "e299" } });
+  });
+
+  it("exactly 128 entries still use one call", async () => {
+    const { Configurate, JsonProvider, defineConfig, invokeMock } = await loadApi(
+      async (_command, args) => ({
+        results: Object.fromEntries(
+          (args as BatchArgs).payload.entries.map((e) => [e.id, { ok: true, data: null }]),
+        ),
+      }),
+    );
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    await Configurate.saveAll(ids(128).map((id) => ({ id, config, data: { theme: id } }))).run();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a duplicate id across two chunks before any call", async () => {
+    const { Configurate, JsonProvider, defineConfig, invokeMock } = await loadApi(async () => ({
+      results: {},
+    }));
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    const list = ids(200);
+    list[150] = "e3";
+    expect(() => Configurate.loadAll(list.map((id) => ({ id, config })))).toThrow(
+      /Batch entry id 'e3' is duplicated/,
+    );
+    expect(() =>
+      Configurate.patchAll(list.map((id) => ({ id, config, data: { theme: "x" } }))),
+    ).toThrow(/duplicated/);
+    expect(invokeMock).toHaveBeenCalledTimes(0);
+  });
+
+  it("reports a failing chunk per id and keeps the other chunks' results", async () => {
+    let call = 0;
+    const { Configurate, JsonProvider, defineConfig, invokeMock } = await loadApi(
+      async (_command, args) => {
+        call++;
+        if (call === 2) throw "configurate.save_all not allowed";
+        if (call === 3) throw { kind: "invalid_payload", message: "bad batch" };
+        return {
+          results: Object.fromEntries(
+            (args as BatchArgs).payload.entries.map((e) => [e.id, { ok: true, data: null }]),
+          ),
+        };
+      },
+    );
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    const result = await Configurate.saveAll(
+      ids(300).map((id) => ({ id, config, data: { theme: id } })),
+    ).run();
+
+    expect(batchCalls(invokeMock, "plugin:configurate|save_all")).toHaveLength(3);
+    expect(result.results.e0).toEqual({ ok: true, data: null });
+    expect(result.results.e127).toEqual({ ok: true, data: null });
+    expect(result.results.e128).toEqual({
+      ok: false,
+      error: { kind: "batch_call_failed", message: "configurate.save_all not allowed" },
+    });
+    expect(result.results.e255?.ok).toBe(false);
+    expect(result.results.e256).toEqual({
+      ok: false,
+      error: { kind: "invalid_payload", message: "bad batch" },
+    });
+    expect(Object.keys(result.results)).toHaveLength(300);
+  });
+
+  it("a single-call batch still rejects when the call fails", async () => {
+    const { Configurate, JsonProvider, defineConfig } = await loadApi(async () => {
+      throw "configurate.patch_all not allowed";
+    });
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    await expect(
+      Configurate.patchAll([{ id: "a", config, data: { theme: "x" } }]).run(),
+    ).rejects.toBe("configurate.patch_all not allowed");
+  });
+
+  it("keeps per-entry post-processing across chunks", async () => {
+    const { Configurate, JsonProvider, defineConfig } = await loadApi(async (_command, args) => ({
+      results: Object.fromEntries(
+        (args as BatchArgs).payload.entries.map((e) => [
+          e.id,
+          // e200 lives in the second chunk and has invalid data.
+          { ok: true, data: e.id === "e200" ? { theme: 1 } : { theme: e.id } },
+        ]),
+      ),
+    }));
+    const config = new Configurate({
+      schema: defineConfig({ theme: String, lang: String }),
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+      defaults: { lang: "en" },
+      validation: { validateOnRead: true },
+    });
+
+    const result = await Configurate.loadAll(ids(260).map((id) => ({ id, config }))).run();
+    expect(result.results.e0).toEqual({ ok: true, data: { theme: "e0", lang: "en" } });
+    expect(result.results.e259).toEqual({ ok: true, data: { theme: "e259", lang: "en" } });
+    const broken = result.results.e200;
+    expect(broken?.ok).toBe(false);
+    if (broken && !broken.ok) expect(broken.error.kind).toBe("schema_validation");
+  });
+
+  it("saveAll keeps preflight failures beside chunked results", async () => {
+    const { Configurate, JsonProvider, defineConfig, keyring, invokeMock } = await loadApi(
+      async (_command, args) => ({
+        results: Object.fromEntries(
+          (args as BatchArgs).payload.entries.map((e) => [e.id, { ok: true, data: null }]),
+        ),
+      }),
+    );
+    const plain = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "p.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    const secret = new Configurate({
+      schema: defineConfig({ token: keyring(String, { id: "tok" }) }),
+      fileName: "k.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    const entries = ids(130).map((id) => ({ id, config: plain, data: { theme: id } as unknown }));
+    entries.push({ id: "secret", config: secret, data: { token: "t" } });
+
+    const result = await Configurate.saveAll(entries).run();
+    const calls = batchCalls(invokeMock, "plugin:configurate|save_all");
+    expect(calls.map(([, a]) => a.payload.entries.length)).toEqual([128, 2]);
+    expect(result.results.e129).toEqual({ ok: true, data: null });
+    const failed = result.results.secret;
+    expect(failed?.ok).toBe(false);
+    if (failed && !failed.ok) expect(failed.error.kind).toBe("payload_build_failed");
+  });
+});

@@ -545,7 +545,13 @@ fn to_batch_error_value(error: &Error) -> Value {
     })
 }
 
-/// Maximum number of entries allowed in a single batch command.
+/// Maximum number of entries allowed in a single batch command (one IPC call).
+///
+/// Entries run one after another on the async worker that handles the call, and
+/// every result is held until the response is sent, so this bounds the work and
+/// the response size of one call (at most this many files of `maxReadBytes`
+/// each). The guest builders split longer lists into consecutive calls of at
+/// most this size (`MAX_BATCH_ENTRIES` in `guest-js/configurate.ts`).
 const MAX_BATCH_ENTRIES: usize = 128;
 
 /// Rejects `load` payloads that try to read the keyring via `withUnlock`.
