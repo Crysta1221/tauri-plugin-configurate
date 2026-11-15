@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## ✨ Features
+
+- `optional()` fields are now inferred as optional keys (`key?: T | undefined`) in `InferLocked` / `InferUnlocked` at every depth, so object literals for `create()`, `save()`, `defaults` and so on may omit them.
+- Added schema markers `json<T>()` (opaque JSON value), `record(schema)` (string-keyed map) and `oneOf("a", "b", ...)` (string literal union). They work with `optional()`, as array elements, with `patch()` and `defaults` (which fill `json()` / `record()` only as a whole), and are validated by `validateOnWrite` / `validateOnRead`. Keyring fields inside `record()` are rejected by `defineConfig()`.
+- Added static `Configurate.list({ baseDir, provider, options })` to list config files in a directory without a `Configurate` instance. It uses the existing `list_configs` command, which now accepts a payload without `fileName`.
+- Exported `isNotFoundError()` and the `ConfigurateError`, `ConfigurateErrorKind` and `ConfigurateIoErrorKind` types. `BatchRunEntryResult` errors are now typed as `ConfigurateError` (`kind` is a union of the known kinds that still accepts any string).
+- Added the opt-in `preserve-order` Cargo feature to write object keys in insertion order instead of alphabetically.
+- Documented the per-command `configurate:allow-*` permissions, `defaults` merge rules, the error shape, and that `save()` creates missing parent directories and `delete()` succeeds when the file is absent.
+
+## 🐛 Fixes
+
+- `create()` / `save()` / `reset()` with `.run()` no longer ask Rust to send the written data back over IPC; the returned `LockedConfig` was already built from the data passed in.
+
 ## [0.5.2] - 2026-06-18
 
 # 🚀 0.5.2 Release Notes

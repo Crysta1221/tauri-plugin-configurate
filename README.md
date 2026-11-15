@@ -68,6 +68,8 @@ Grant permissions in your capability file (e.g. `src-tauri/capabilities/default.
 }
 ```
 
+`configurate:default` grants every command except `unlock`, including `delete`, `reset`, `import_config` and `export_config`. Prefer granting only what your app uses, for example `["configurate:allow-load", "configurate:allow-save"]`. The per-command permissions and which API uses which are listed in [commands.md → Permissions](./commands.md#permissions).
+
 When using keyring unlock (`.unlock()`, `loadAll().unlock()`), also add `configurate:allow-unlock`.
 
 Afterwards the plugin APIs are available through the JavaScript guest bindings:
@@ -109,7 +111,12 @@ await config
 const { data } = await config.load().unlock(KEYRING);
 ```
 
-See [commands.md](./commands.md) for the full API (batch, patch, export/import, file watching, and more).
+See [commands.md](./commands.md) for the full API (batch, patch, export/import, file watching, and more), including:
+
+- `optional()` keys, which may be left out of object literals, and the `json()`, `record()` and `oneOf()` markers for opaque values, string-keyed maps and string enums.
+- How `defaults` fill missing keys on load.
+- `Configurate.list({ baseDir, provider, options })` to list a directory without a config instance.
+- The [error shape](./commands.md#errors) and `isNotFoundError()` to tell a missing file from a broken one.
 
 ### Path layout
 
@@ -140,6 +147,17 @@ The maximum size of config files and import content defaults to **16 MiB**. You 
   }
 }
 ```
+
+### Key order
+
+Files are written with object keys sorted alphabetically. To keep the order of the data you save, enable the `preserve-order` feature:
+
+```toml
+[dependencies]
+tauri-plugin-configurate = { version = "...", features = ["preserve-order"] }
+```
+
+Cargo unifies features, so this also makes `serde_json::Map` and `toml::map::Map` keep insertion order for the rest of your app's build. See [commands.md → Key order](./commands.md#key-order-preserve-order-feature) for the exact behavior per format.
 
 ## Providers
 
