@@ -247,12 +247,7 @@ function normalizeConfigurateInit<S extends SchemaObject>(
   };
 }
 
-function buildChangeTargetId(
-  init: Pick<
-    NormalizedConfigurateInit<SchemaObject>,
-    "fileName" | "baseDir" | "provider" | "options"
-  >,
-): string {
+function buildChangeTargetId(init: ConfigurateListOptions & { fileName: string }): string {
   return [
     JSON.stringify(init.baseDir),
     init.provider.kind,
@@ -684,13 +679,7 @@ class SaveAllBuilder {
     for (const entry of this._entries) {
       const lockOpts = this._lockById.get(entry.id) ?? this._lockAll;
       try {
-        const entryPayload = entry.config._buildPayload(
-          "save",
-          entry.data as InferUnlocked<SchemaObject>,
-          lockOpts,
-          false,
-          false,
-        );
+        const entryPayload = entry.config._buildPayload("save", entry.data, lockOpts, false, false);
         await entry.config._attachFullReplaceKeyringDeletes(entryPayload, lockOpts);
         payloadEntries.push({
           id: entry.id,
@@ -774,13 +763,7 @@ class PatchAllBuilder {
       try {
         payloadEntries.push({
           id: entry.id,
-          payload: entry.config._buildPayload(
-            "patch",
-            entry.data as Partial<InferUnlocked<SchemaObject>>,
-            lockOpts,
-            false,
-            false,
-          ),
+          payload: entry.config._buildPayload("patch", entry.data, lockOpts, false, false),
         });
       } catch (error) {
         preflightResults[entry.id] = {
@@ -833,9 +816,7 @@ export class Configurate<S extends SchemaObject> {
     this._schema = normalized.schema;
     validateSchemaArrays(this._schema);
     this._opts = normalized;
-    this._changeTargetId = buildChangeTargetId(
-      normalized as NormalizedConfigurateInit<SchemaObject>,
-    );
+    this._changeTargetId = buildChangeTargetId(normalized);
     this._keyringPaths = collectStaticKeyringPaths(this._schema);
     this._hasKeyringFields = hasAnyKeyring(this._schema);
     this._hasArrayKeyring = hasArrayKeyring(this._schema);
@@ -1207,7 +1188,11 @@ export class Configurate<S extends SchemaObject> {
       didMigrate = migrationResult.didMigrate;
     }
     if (this._opts.defaults) {
-      result = deepMergeDefaults(result, this._opts.defaults as Record<string, unknown>);
+      result = deepMergeDefaults(
+        result,
+        this._opts.defaults as Record<string, unknown>,
+        this._schema,
+      );
     }
     return { result, didMigrate };
   }

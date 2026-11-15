@@ -2295,3 +2295,317 @@ describe("isNotFoundError", () => {
     if (entry && !entry.ok) expect(isNotFoundError(entry.error)).toBe(true);
   });
 });
+
+describe("Value markers: json() / record() / oneOf()", () => {
+  async function setup(
+    handler: InvokeHandler = async (command) => {
+      if (command === "plugin:configurate|load") {
+        throw { kind: "io", message: "missing", io_kind: "not_found" };
+      }
+      return null;
+    },
+  ) {
+    const api = await loadApi(handler);
+    const { defineConfig, json, record, oneOf, optional, keyring } = api;
+    const schema = defineConfig({
+      shape: json(),
+      maybeShape: optional(json()),
+      shortcuts: record(String),
+      panes: record({ width: Number, tags: [String] }),
+      maybePanes: optional(record({ width: Number })),
+      theme: oneOf("light", "dark"),
+      maybeTheme: optional(oneOf("a", "b")),
+      shapes: [json()],
+      maps: [record(Number)],
+      themes: [oneOf("x", "y")],
+      token: keyring(String, { id: "marker-token" }),
+    });
+    const config = new api.Configurate({
+      schema,
+      fileName: "markers.json",
+      baseDir: 13 as never,
+      provider: api.JsonProvider(),
+      validation: { validateOnWrite: true, validateOnRead: true },
+    });
+    return { ...api, schema, config };
+  }
+
+  const KEYRING = { service: "svc", account: "acc" };
+  const valid = () => ({
+    shape: { kind: "rect", w: 1, h: [2, null, { deep: true }] },
+    shortcuts: { save: "Ctrl+S" },
+    panes: { left: { width: 200, tags: ["a"] } },
+    theme: "dark",
+    shapes: [{ kind: "circle" }, 1, "two", null],
+    maps: [{ a: 1 }],
+    themes: ["x", "y"],
+    token: "secret",
+  });
+
+  it("accepts valid values, with optional markers absent or null", async () => {
+    const { config } = await setup();
+    expect(() => config.validate(valid() as never)).not.toThrow();
+    expect(() =>
+      config.validate({
+        ...valid(),
+        maybeShape: null,
+        maybePanes: null,
+        maybeTheme: null,
+      } as never),
+    ).not.toThrow();
+    expect(() =>
+      config.validate({
+        ...valid(),
+        maybeShape: [1],
+        maybePanes: { a: { width: 1 } },
+        maybeTheme: "b",
+      } as never),
+    ).not.toThrow();
+  });
+
+  it("rejects values that do not match a marker", async () => {
+    const { config } = await setup();
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ shape: undefined }, /'<root>.shape'. Expected JSON value, got undefined/],
+      [{ shape: { at: new Date(0) } }, /'<root>.shape.at'. Expected JSON value, got object/],
+      [{ shape: { n: Number.NaN } }, /'<root>.shape.n'. Expected JSON value, got non-finite/],
+      [{ shape: [1, undefined] }, /'<root>.shape\[1\]'. Expected JSON value, got undefined/],
+      [{ shape: () => 1 }, /Expected JSON value, got function/],
+      [{ shape: 1n }, /Expected JSON value, got bigint/],
+      [{ shortcuts: ["a"] }, /'<root>.shortcuts'. Expected object, got array/],
+      [{ shortcuts: { save: 1 } }, /'<root>.shortcuts.save'. Expected string, got number/],
+      [{ panes: { left: { width: "1", tags: [] } } }, /'<root>.panes.left.width'. Expected number/],
+      [{ panes: { left: { width: 1 } } }, /'<root>.panes.left.tags'. Missing required key/],
+      [{ panes: { left: { width: 1, tags: [], extra: 1 } } }, /Key is not declared in schema/],
+      [{ theme: "blue" }, /'<root>.theme'. Expected one of "light", "dark", got "blue"/],
+      [{ theme: 1 }, /Expected one of "light", "dark", got number/],
+      [{ maybeTheme: "c" }, /'<root>.maybeTheme'. Expected one of "a", "b"/],
+      [{ shapes: [Symbol("s")] }, /'<root>.shapes\[0\]'. Expected JSON value, got symbol/],
+      [{ maps: [{ a: "1" }] }, /'<root>.maps\[0\].a'. Expected number/],
+      [{ themes: ["x", "z"] }, /'<root>.themes\[1\]'. Expected one of "x", "y"/],
+    ];
+    for (const [override, message] of cases) {
+      expect(() => config.validate({ ...valid(), ...override } as never)).toThrow(message);
+    }
+    const missing = valid() as Record<string, unknown>;
+    delete missing.theme;
+    expect(() => config.validate(missing as never)).toThrow(/'<root>.theme'. Missing required key/);
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => config.validate({ ...valid(), shape: cyclic } as never)).toThrow(
+      /circular reference/,
+    );
+    // Shared (non-cyclic) references are fine.
+    const shared = { a: 1 };
+    expect(() => config.validate({ ...valid(), shape: [shared, shared] } as never)).not.toThrow();
+  });
+
+  it("validates on write and keeps marker values out of the keyring", async () => {
+    const { config, invokeMock } = await setup();
+    await config
+      .save(valid() as never)
+      .lock(KEYRING)
+      .run();
+
+    const saveCall = (
+      invokeMock.mock.calls as Array<[string, { payload: Record<string, unknown> }]>
+    ).find(([cmd]) => cmd === "plugin:configurate|save");
+    const payload = saveCall?.[1].payload as Record<string, unknown>;
+    // Only the real keyring field is extracted; marker values stay on disk as-is.
+    expect(payload.keyringEntries).toEqual([
+      { id: "marker-token", dotpath: "token", value: '"secret"' },
+    ]);
+    expect(payload.data).toEqual({ ...valid(), token: null });
+
+    await expect(
+      config
+        .save({ ...valid(), theme: "blue" } as never)
+        .lock(KEYRING)
+        .run(),
+    ).rejects.toThrow(/Expected one of/);
+  });
+
+  it("validates on read and unlocks only the keyring field", async () => {
+    const stored = { ...valid(), token: null };
+    const { config, invokeMock } = await setup(async (command, args) => {
+      if (command === "plugin:configurate|load") return structuredClone(stored);
+      if (command === "plugin:configurate|unlock") {
+        const payload = args?.payload as { data: Record<string, unknown> };
+        return { ...payload.data, token: "secret" };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const unlocked = await config.load().unlock(KEYRING);
+    expect(unlocked.data).toEqual(valid());
+    const unlockCall = (
+      invokeMock.mock.calls as Array<[string, { payload: Record<string, unknown> }]>
+    ).find(([cmd]) => cmd === "plugin:configurate|unlock");
+    expect(unlockCall?.[1].payload.keyringEntries).toEqual([
+      { id: "marker-token", dotpath: "token", value: "" },
+    ]);
+  });
+
+  it("rejects broken data on read", async () => {
+    const { config } = await setup(async () => ({ ...valid(), token: null, theme: "blue" }));
+    await expect(config.load().run()).rejects.toThrow(/'<root>.theme'. Expected one of/);
+  });
+
+  it("validates patch data: record entries merge, other markers are checked whole", async () => {
+    const { config, invokeMock } = await setup();
+    // A record entry may be partial in a patch (Rust deep-merges it).
+    await config.patch({ panes: { left: { width: 300 } } } as never).run();
+    await config.patch({ theme: "light", shape: { any: ["thing"] } } as never).run();
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+
+    await expect(config.patch({ theme: "blue" } as never).run()).rejects.toThrow(/Expected one of/);
+    await expect(
+      config.patch({ panes: { left: { width: "wide" } } } as never).run(),
+    ).rejects.toThrow(/'<root>.panes.left.width'. Expected number/);
+    await expect(config.patch({ shortcuts: { save: null } } as never).run()).rejects.toThrow(
+      /'<root>.shortcuts.save'. Expected string, got null/,
+    );
+    await expect(config.patch({ shape: undefined } as never).run()).rejects.toThrow(
+      /Expected JSON value, got undefined/,
+    );
+    expect(config.validatePartial({ maybeTheme: null } as never)).toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fills defaults for missing markers but never merges into a stored record or json value", async () => {
+    const { Configurate, JsonProvider, defineConfig, json, record, oneOf } = await loadApi(
+      async () => ({
+        settings: { size: 1 },
+        shortcuts: { open: "Ctrl+O" },
+        shape: { kind: "circle", r: 1 },
+      }),
+    );
+    const config = new Configurate({
+      schema: defineConfig({
+        settings: { size: Number, color: String },
+        shortcuts: record(String),
+        shape: json(),
+        theme: oneOf("light", "dark"),
+        extra: record(Number),
+      }),
+      fileName: "defaults.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+      defaults: {
+        settings: { size: 2, color: "red" },
+        shortcuts: { save: "Ctrl+S" },
+        shape: { kind: "rect", w: 1 },
+        theme: "dark",
+        extra: { a: 1 },
+      },
+      validation: { validateOnRead: true },
+    });
+
+    const locked = await config.load().run();
+    expect(locked.data).toEqual({
+      settings: { size: 1, color: "red" }, // plain objects still merge
+      shortcuts: { open: "Ctrl+O" }, // stored map kept as a whole
+      shape: { kind: "circle", r: 1 }, // stored json kept as a whole
+      theme: "dark", // missing key filled
+      extra: { a: 1 }, // missing record filled from defaults
+    });
+  });
+});
+
+describe("Value markers: nested defaults", () => {
+  it("keeps optional and nested markers whole while merging the objects around them", async () => {
+    const { Configurate, JsonProvider, defineConfig, json, record, optional } = await loadApi(
+      async () => ({
+        maybeMap: { kept: 1 },
+        ui: { panes: { left: 100 }, layout: { kind: "grid" } },
+      }),
+    );
+    const config = new Configurate({
+      schema: defineConfig({
+        maybeMap: optional(record(Number)),
+        ui: { panes: record(Number), layout: json(), zoom: Number },
+      }),
+      fileName: "nested.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+      defaults: {
+        maybeMap: { added: 2 },
+        ui: { panes: { right: 200 }, layout: { kind: "list", gap: 1 }, zoom: 1 },
+      },
+      validation: { validateOnRead: true },
+    });
+    const locked = await config.load().run();
+    expect(locked.data).toEqual({
+      maybeMap: { kept: 1 },
+      ui: { panes: { left: 100 }, layout: { kind: "grid" }, zoom: 1 },
+    });
+  });
+});
+
+describe("Value markers: schema checks", () => {
+  it("rejects keyring fields anywhere inside a record()", async () => {
+    const { defineConfig, keyring, record } = await loadApi(async () => null);
+    expect(() => defineConfig({ m: record(keyring(String, { id: "a" }) as never) })).toThrow(
+      /'m.\*'. keyring\(\) fields are not supported inside record\(\)/,
+    );
+    expect(() =>
+      defineConfig({ m: record({ inner: { secret: keyring(String, { id: "b" }) } }) }),
+    ).toThrow(/'m.\*.inner.secret'. keyring\(\) fields are not supported inside record\(\)/);
+    expect(() => defineConfig({ m: record([keyring(String, { id: "c" })]) as never })).toThrow(
+      /'m.\*\[\]'. keyring\(\) fields are not supported/,
+    );
+    expect(() => defineConfig({ m: record(record({ s: keyring(String, { id: "d" }) })) })).toThrow(
+      /'m.\*.\*.s'/,
+    );
+  });
+
+  it("checks array and optional shapes inside a record()", async () => {
+    const { defineConfig, optional, record } = await loadApi(async () => null);
+    expect(() => defineConfig({ m: record({ list: [String, Number] as never }) })).toThrow(
+      /Invalid array schema at 'm.\*.list'/,
+    );
+    expect(() => defineConfig({ m: record(optional(String) as never) })).toThrow(
+      /record\(\) values cannot be optional/,
+    );
+  });
+
+  it("the constructor applies the same checks", async () => {
+    const { Configurate, JsonProvider, keyring, record } = await loadApi(async () => null);
+    expect(
+      () =>
+        new Configurate({
+          schema: { m: record({ s: keyring(String, { id: "e" }) }) } as never,
+          fileName: "x.json",
+          baseDir: 13 as never,
+          provider: JsonProvider(),
+        }),
+    ).toThrow(/not supported inside record/);
+  });
+
+  it("oneOf() requires string values", async () => {
+    const { oneOf } = await loadApi(async () => null);
+    expect(() => (oneOf as (...v: unknown[]) => unknown)()).toThrow(/at least one value/);
+    expect(() => (oneOf as (...v: unknown[]) => unknown)("a", 1)).toThrow(/must be strings/);
+  });
+
+  it("a keyring field beside markers keeps its static path and delete entry", async () => {
+    const { Configurate, JsonProvider, defineConfig, json, record, keyring, invokeMock } =
+      await loadApi(async () => null);
+    const config = new Configurate({
+      schema: defineConfig({
+        meta: json(),
+        map: record({ name: String }),
+        nested: { secret: keyring(String, { id: "nested-secret" }), tags: record(String) },
+      }),
+      fileName: "k.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    await config.delete({ service: "svc", account: "acc" });
+    const [, args] = invokeMock.mock.calls[0] as [string, { payload: Record<string, unknown> }];
+    expect(args.payload.keyringEntries).toEqual([
+      { id: "nested-secret", dotpath: "nested.secret", value: "" },
+    ]);
+  });
+});

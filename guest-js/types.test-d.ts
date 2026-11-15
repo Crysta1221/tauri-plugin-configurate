@@ -2,10 +2,15 @@
 // `bunx tsc -p tsconfig.json`; never imported or executed, and excluded from
 // the npm build (`tsconfig.build.json`).
 
-import { defineConfig, keyring, optional } from "./schema";
-import type { InferLocked, InferUnlocked } from "./schema";
+import { defineConfig, json, keyring, oneOf, optional, record } from "./schema";
+import type { CollectKeyringIds, InferLocked, InferUnlocked, SchemaObject } from "./schema";
 import { isNotFoundError } from "./configurate";
-import type { BatchRunEntryResult, ConfigurateError, ConfigurateErrorKind } from "./configurate";
+import type {
+  BatchRunEntryResult,
+  Configurate,
+  ConfigurateError,
+  ConfigurateErrorKind,
+} from "./configurate";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -105,3 +110,91 @@ export function narrowsNotFound(error: unknown): "not_found" | undefined {
   }
   return undefined;
 }
+
+// ---------------------------------------------------------------------------
+// json() / record() / oneOf()
+// ---------------------------------------------------------------------------
+
+type Shape = { kind: "circle"; r: number } | { kind: "rect"; w: number; h: number };
+
+const markerSchema = defineConfig({
+  anything: json(),
+  shape: json<Shape>(),
+  shortcuts: record(String),
+  panes: record({ width: Number, pinned: optional(Boolean) }),
+  nestedMap: record(record(oneOf("x", "y"))),
+  listMap: record([Number]),
+  theme: oneOf("light", "dark", "system"),
+  maybeShape: optional(json<Shape>()),
+  maybeMap: optional(record(Boolean)),
+  maybeTheme: optional(oneOf("a", "b")),
+  shapes: [json<Shape>()],
+  maps: [record(String)],
+  themes: [oneOf("light", "dark")],
+  token: keyring(String, { id: "marker-token" }),
+});
+
+type MarkerData = InferUnlocked<typeof markerSchema>;
+
+export type MarkerTests = [
+  Expect<Equal<MarkerData["anything"], unknown>>,
+  Expect<Equal<MarkerData["shape"], Shape>>,
+  // A record of String is a map, not an object with a `_schema` key.
+  Expect<Equal<MarkerData["shortcuts"], Record<string, string>>>,
+  Expect<
+    Equal<MarkerData["panes"], Record<string, { width: number; pinned?: boolean | undefined }>>
+  >,
+  Expect<Equal<MarkerData["nestedMap"], Record<string, Record<string, "x" | "y">>>>,
+  Expect<Equal<MarkerData["listMap"], Record<string, number[]>>>,
+  Expect<Equal<MarkerData["theme"], "light" | "dark" | "system">>,
+  Expect<Equal<MarkerData["maybeShape"], Shape | undefined>>,
+  Expect<Equal<MarkerData["maybeMap"], Record<string, boolean> | undefined>>,
+  Expect<Equal<MarkerData["maybeTheme"], "a" | "b" | undefined>>,
+  Expect<Equal<MarkerData["shapes"], Shape[]>>,
+  Expect<Equal<MarkerData["maps"], Record<string, string>[]>>,
+  Expect<Equal<MarkerData["themes"], ("light" | "dark")[]>>,
+  // Same inference when locked; markers never become null.
+  Expect<Equal<InferLocked<typeof markerSchema>["shape"], Shape>>,
+  Expect<Equal<InferLocked<typeof markerSchema>["token"], null>>,
+];
+
+// Markers are never walked as nested objects for keyring ids.
+const markerOnlySchema = defineConfig({
+  map: record({ name: String }),
+  maybeMap: optional(record(String)),
+  value: json(),
+  choice: oneOf("a"),
+});
+export type MarkerKeyringIdTests = [
+  Expect<Equal<CollectKeyringIds<typeof markerOnlySchema>, never>>,
+];
+
+export const markerValue: InferUnlocked<typeof markerSchema> = {
+  anything: { free: ["form", 1, null] },
+  shape: { kind: "rect", w: 1, h: 2 },
+  shortcuts: { save: "Ctrl+S" },
+  panes: { left: { width: 200 } },
+  nestedMap: {},
+  listMap: { a: [1, 2] },
+  theme: "dark",
+  shapes: [],
+  maps: [{ a: "b" }],
+  themes: ["light"],
+  token: "secret",
+};
+
+// @ts-expect-error -- not one of the allowed strings
+export const rejectsOtherTheme: MarkerData["theme"] = "blue";
+
+// @ts-expect-error -- keyring fields are not allowed as record values
+export const keyringInRecord = record(keyring(String, { id: "k" }));
+
+// @ts-expect-error -- oneOf() needs at least one value
+export const emptyOneOf = oneOf();
+
+// The wide schema type still instantiates (generic helpers rely on it).
+export type WideSchema = [
+  InferUnlocked<SchemaObject>,
+  InferLocked<SchemaObject>,
+  ReturnType<Configurate<SchemaObject>["validate"]>,
+];
