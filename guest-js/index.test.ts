@@ -2146,3 +2146,86 @@ describe("Write payloads", () => {
     expect(reset.data).toEqual({ token: "secret" });
   });
 });
+
+describe("Configurate.list (static)", () => {
+  it("sends a directory-level payload without fileName", async () => {
+    const { Configurate, BinaryProvider, invokeMock } = await loadApi(async (command) => {
+      if (command === "plugin:configurate|list_configs") return ["a.json"];
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const files = await Configurate.list({
+      baseDir: 13 as never,
+      provider: BinaryProvider({ encryptionKey: "k", kdf: "argon2" }),
+      options: { dirName: "sessions", currentPath: "2026" },
+    });
+
+    expect(files).toEqual(["a.json"]);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    const [cmd, args] = invokeMock.mock.calls[0] as [string, { payload: Record<string, unknown> }];
+    expect(cmd).toBe("plugin:configurate|list_configs");
+    expect(args.payload).toEqual({
+      baseDir: 13,
+      // The encryption key never crosses IPC for a listing.
+      provider: { kind: "binary", kdf: "argon2" },
+      options: { dirName: "sessions", currentPath: "2026" },
+      withUnlock: false,
+      returnData: false,
+    });
+    expect("fileName" in args.payload).toBe(false);
+  });
+
+  it("omits options when no path option is set", async () => {
+    const { Configurate, JsonProvider, invokeMock } = await loadApi(async () => []);
+    await Configurate.list({ baseDir: 13 as never, provider: JsonProvider(), options: {} });
+    const [, args] = invokeMock.mock.calls[0] as [string, { payload: Record<string, unknown> }];
+    expect(args.payload).toEqual({
+      baseDir: 13,
+      provider: { kind: "json" },
+      withUnlock: false,
+      returnData: false,
+    });
+  });
+
+  it("validates the location like the constructor", async () => {
+    const { Configurate, JsonProvider, invokeMock } = await loadApi(async () => []);
+
+    await expect(
+      Configurate.list({
+        baseDir: 13 as never,
+        provider: JsonProvider(),
+        options: { dirName: "a/../b" },
+      }),
+    ).rejects.toThrow(/dot-only segments/);
+    await expect(
+      Configurate.list({
+        baseDir: 13 as never,
+        provider: JsonProvider(),
+        options: { currentPath: "a:b" },
+      }),
+    ).rejects.toThrow(/forbidden characters/);
+    await expect(
+      Configurate.list({ baseDir: undefined as never, provider: JsonProvider() }),
+    ).rejects.toThrow(/"baseDir" must be provided/);
+    await expect(
+      Configurate.list({ baseDir: 13 as never, provider: { kind: "json" } as never }),
+    ).rejects.toThrow(/provider must be created by/);
+    expect(invokeMock).toHaveBeenCalledTimes(0);
+  });
+
+  it("instance list() keeps working alongside the static form", async () => {
+    const { Configurate, JsonProvider, defineConfig, invokeMock } = await loadApi(async () => [
+      "x.json",
+    ]);
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "x.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    expect(await config.list()).toEqual(["x.json"]);
+    const [cmd, args] = invokeMock.mock.calls[0] as [string, { payload: Record<string, unknown> }];
+    expect(cmd).toBe("plugin:configurate|list_configs");
+    expect(args.payload.fileName).toBe("x.json");
+  });
+});

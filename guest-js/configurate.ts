@@ -161,16 +161,15 @@ function validatePathSegments(value: string, field: string): void {
   }
 }
 
-function normalizeConfigurateInit<S extends SchemaObject>(
-  input: ConfigurateInit<S>,
-): NormalizedConfigurateInit<S> {
-  const schema = input.schema;
+/** Directory-level location shared by the constructor and `Configurate.list()`. */
+export interface ConfigurateListOptions {
+  baseDir: BaseDirectory;
+  provider: ConfigurateProvider;
+  options?: ConfiguratePathOptions;
+}
 
-  const fileName = input.fileName;
-  if (!fileName) {
-    throw new Error('Configurate: "fileName" must be provided.');
-  }
-
+/** Validates `baseDir` / `provider` / path options (mirrors the Rust path rules). */
+function normalizeLocation(input: ConfigurateListOptions): ConfigurateListOptions {
   const baseDir = input.baseDir;
   if (baseDir === undefined) {
     throw new Error('Configurate: "baseDir" must be provided.');
@@ -183,8 +182,6 @@ function normalizeConfigurateInit<S extends SchemaObject>(
     );
   }
 
-  validatePathComponent(fileName, '"fileName"');
-
   if (input.options?.dirName !== undefined) {
     validatePathSegments(input.options.dirName, '"options.dirName"');
   }
@@ -193,11 +190,55 @@ function normalizeConfigurateInit<S extends SchemaObject>(
   }
 
   return {
+    baseDir,
+    provider,
+    options: input.options?.dirName || input.options?.currentPath ? input.options : undefined,
+  };
+}
+
+/** Serializes the provider for IPC payloads. */
+function serializeProvider(
+  p: ConfigurateProvider,
+  includeEncryptionKey: boolean,
+): Record<string, unknown> {
+  if (p.kind === "binary") {
+    const out: Record<string, unknown> = { kind: "binary", kdf: p.kdf };
+    if (includeEncryptionKey && p.encryptionKey !== undefined) {
+      out.encryptionKey = p.encryptionKey;
+    }
+    return out;
+  }
+  return { kind: p.kind };
+}
+
+/** Serializes the path options for IPC payloads. */
+function serializePathOptions(
+  options: ConfiguratePathOptions | undefined,
+): Record<string, unknown> | undefined {
+  if (options === undefined) return undefined;
+  return { dirName: options.dirName, currentPath: options.currentPath };
+}
+
+function normalizeConfigurateInit<S extends SchemaObject>(
+  input: ConfigurateInit<S>,
+): NormalizedConfigurateInit<S> {
+  const schema = input.schema;
+
+  const fileName = input.fileName;
+  if (!fileName) {
+    throw new Error('Configurate: "fileName" must be provided.');
+  }
+
+  const { baseDir, provider, options } = normalizeLocation(input);
+
+  validatePathComponent(fileName, '"fileName"');
+
+  return {
     schema,
     fileName,
     baseDir,
     provider,
-    options: input.options?.dirName || input.options?.currentPath ? input.options : undefined,
+    options,
     validation: resolveValidationOptions(input.validation),
     defaults: input.defaults,
     version: input.version,
@@ -732,32 +773,17 @@ export class Configurate<S extends SchemaObject> {
     this._hasArrayKeyring = hasArrayKeyring(this._schema);
   }
 
-  /** Serializes the provider for IPC payloads. */
-  private _serializeProvider(includeEncryptionKey: boolean): Record<string, unknown> {
-    const p = this._opts.provider;
-    if (p.kind === "binary") {
-      const out: Record<string, unknown> = { kind: "binary", kdf: p.kdf };
-      if (includeEncryptionKey && p.encryptionKey !== undefined) {
-        out.encryptionKey = p.encryptionKey;
-      }
-      return out;
-    }
-    return { kind: p.kind };
-  }
-
   /** Builds common base fields shared by all payloads. */
   private _buildBasePayload(options?: { includeEncryptionKey?: boolean }): Record<string, unknown> {
     const includeEncryptionKey = options?.includeEncryptionKey ?? false;
     const base: Record<string, unknown> = {
       fileName: this._opts.fileName,
       baseDir: this._opts.baseDir as number,
-      provider: this._serializeProvider(includeEncryptionKey),
+      provider: serializeProvider(this._opts.provider, includeEncryptionKey),
     };
-    if (this._opts.options !== undefined) {
-      base.options = {
-        dirName: this._opts.options.dirName,
-        currentPath: this._opts.options.currentPath,
-      };
+    const pathOptions = serializePathOptions(this._opts.options);
+    if (pathOptions !== undefined) {
+      base.options = pathOptions;
     }
     if (this._opts.backup) {
       base.backup = true;
@@ -775,6 +801,35 @@ export class Configurate<S extends SchemaObject> {
 
   static patchAll(entries: PatchAllEntry[]): PatchAllRunner {
     return new PatchAllBuilder(entries);
+  }
+
+  /**
+   * Lists config file names in a directory without a `Configurate` instance
+   * (no schema or `fileName` needed).
+   *
+   * Uses the same path rules as the constructor and the same `list_configs`
+   * command (`configurate:allow-list-configs`) as `config.list()`.
+   *
+   * @example
+   * const files = await Configurate.list({
+   *   baseDir: BaseDirectory.AppData,
+   *   provider: JsonProvider(),
+   *   options: { dirName: "sessions" },
+   * });
+   */
+  static async list(opts: ConfigurateListOptions): Promise<string[]> {
+    const { baseDir, provider, options } = normalizeLocation(opts);
+    const payload: Record<string, unknown> = {
+      baseDir: baseDir as number,
+      provider: serializeProvider(provider, false),
+      withUnlock: false,
+      returnData: false,
+    };
+    const pathOptions = serializePathOptions(options);
+    if (pathOptions !== undefined) {
+      payload.options = pathOptions;
+    }
+    return invoke<string[]>("plugin:configurate|list_configs", { payload });
   }
 
   create(data: InferUnlocked<S>): LazyConfigEntry<S> {
@@ -797,8 +852,9 @@ export class Configurate<S extends SchemaObject> {
   /**
    * Lists config file names in the resolved root directory.
    *
-   * For file-based providers, scans for files matching the provider extension.
-   * For SQLite, returns all `config_key` values in the table.
+   * Scans for files matching the provider extension (any file for the binary
+   * provider), excluding backups and temp files. This instance's `fileName`
+   * is ignored; use the static `Configurate.list()` when no instance exists.
    */
   async list(): Promise<string[]> {
     const payload = this._buildLocationPayload();

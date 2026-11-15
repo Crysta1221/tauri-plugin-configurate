@@ -983,13 +983,23 @@ fn should_list_config_file(name: &str, path: &std::path::Path, ext: Option<&str>
     }
 }
 
+/// Normalizes a `list_configs` payload. Listing is directory-level, so
+/// `fileName` is optional here (the static `Configurate.list()` omits it);
+/// it is never used to build the listed path.
+fn normalize_list_payload(mut payload: ConfiguratePayload) -> Result<NormalizedConfiguratePayload> {
+    if payload.file_name.is_none() {
+        payload.file_name = Some(String::new());
+    }
+    payload.normalize()
+}
+
 /// Lists config files (by file name) in the resolved root directory.
 #[command]
 pub(crate) async fn list_configs<R: Runtime>(
     app: AppHandle<R>,
     payload: ConfiguratePayload,
 ) -> Result<Vec<String>> {
-    let normalized = payload.normalize()?;
+    let normalized = normalize_list_payload(payload)?;
 
     let root = resolve_root(
         &app,
@@ -1423,6 +1433,27 @@ mod tests {
     }
 
     // ── is_backup_filename ───────────────────────────────────────────────────
+
+    #[test]
+    fn list_payload_without_file_name_is_accepted() {
+        let payload: ConfiguratePayload = serde_json::from_value(json!({
+            "baseDir": 8,
+            "provider": { "kind": "json" },
+            "options": { "dirName": "sessions" }
+        }))
+        .unwrap();
+        let normalized = normalize_list_payload(payload).unwrap();
+        assert_eq!(normalized.dir_name.as_deref(), Some("sessions"));
+    }
+
+    #[test]
+    fn list_payload_still_requires_base_dir_and_provider() {
+        let payload: ConfiguratePayload =
+            serde_json::from_value(json!({ "provider": { "kind": "json" } })).unwrap();
+        assert!(normalize_list_payload(payload).is_err());
+        let payload: ConfiguratePayload = serde_json::from_value(json!({ "baseDir": 8 })).unwrap();
+        assert!(normalize_list_payload(payload).is_err());
+    }
 
     #[test]
     fn backup_filename_matches_bak_with_digits() {
