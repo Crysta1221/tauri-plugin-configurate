@@ -1123,7 +1123,9 @@ export class Configurate<S extends SchemaObject> {
       return new LockedConfig(result as InferLocked<S>, this);
     }
 
-    const payload = this._buildPayload(op, data, keyringOpts, false, true);
+    // The locked result is built from the payload below, so ask Rust not to echo
+    // the data back (avoids sending a large document across IPC twice).
+    const payload = this._buildPayload(op, data, keyringOpts, false, false);
     await this._attachFullReplaceKeyringDeletes(payload, keyringOpts);
     await invoke(`plugin:configurate|${op}`, {
       payload,
@@ -1250,7 +1252,7 @@ export class Configurate<S extends SchemaObject> {
     data: InferUnlocked<S>,
     keyringOpts: KeyringOptions | null,
   ): Promise<LockedConfig<S>> {
-    const payload = this._buildPayload("create", data, keyringOpts, false, true);
+    const payload = this._buildPayload("create", data, keyringOpts, false, false);
     await this._attachFullReplaceKeyringDeletes(payload, keyringOpts);
     // Use reset command instead of create.
     await invoke("plugin:configurate|reset", { payload });

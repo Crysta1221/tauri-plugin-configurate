@@ -2041,3 +2041,108 @@ describe("configDiff", () => {
     expect(() => configDiff(oldNested, newNested)).toThrow(/maximum nesting depth exceeded/);
   });
 });
+
+describe("Write payloads", () => {
+  const notFound = { kind: "io", message: "not found", io_kind: "not_found" };
+
+  it("create/save/reset .run() do not ask Rust to echo the data back", async () => {
+    const { Configurate, JsonProvider, defineConfig, invokeMock } = await loadApi(
+      async (command) => {
+        if (
+          command === "plugin:configurate|create" ||
+          command === "plugin:configurate|save" ||
+          command === "plugin:configurate|reset"
+        ) {
+          return null;
+        }
+        throw new Error(`unexpected command: ${command}`);
+      },
+    );
+    const schema = defineConfig({ theme: String });
+    const config = new Configurate({
+      schema,
+      fileName: "app.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    const created = await config.create({ theme: "a" }).run();
+    const saved = await config.save({ theme: "b" }).run();
+    const reset = await config.reset({ theme: "c" }).run();
+
+    const calls = invokeMock.mock.calls as Array<[string, { payload: Record<string, unknown> }]>;
+    expect(calls.map(([cmd]) => cmd)).toEqual([
+      "plugin:configurate|create",
+      "plugin:configurate|save",
+      "plugin:configurate|reset",
+    ]);
+    for (const [, args] of calls) {
+      expect(args.payload.returnData).toBe(false);
+    }
+    // The locked result still comes from the data that was sent.
+    expect(created.data).toEqual({ theme: "a" });
+    expect(saved.data).toEqual({ theme: "b" });
+    expect(reset.data).toEqual({ theme: "c" });
+  });
+
+  it("lock().run() with keyring fields sends returnData false and returns locked data", async () => {
+    const { Configurate, JsonProvider, defineConfig, keyring, invokeMock } = await loadApi(
+      async (command) => {
+        if (command === "plugin:configurate|load") throw notFound;
+        if (command === "plugin:configurate|save") return null;
+        throw new Error(`unexpected command: ${command}`);
+      },
+    );
+    const schema = defineConfig({ token: keyring(String, { id: "tok" }) });
+    const config = new Configurate({
+      schema,
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    const locked = await config
+      .save({ token: "secret" } as never)
+      .lock({ service: "svc", account: "acc" })
+      .run();
+
+    const saveCall = (
+      invokeMock.mock.calls as Array<[string, { payload: Record<string, unknown> }]>
+    ).find(([cmd]) => cmd === "plugin:configurate|save");
+    expect(saveCall?.[1].payload.returnData).toBe(false);
+    expect(locked.data).toEqual({ token: null });
+  });
+
+  it("unlock paths still ask for the data because they return it", async () => {
+    const { Configurate, JsonProvider, defineConfig, keyring, invokeMock } = await loadApi(
+      async (command) => {
+        if (command === "plugin:configurate|load") throw notFound;
+        if (command === "plugin:configurate|create" || command === "plugin:configurate|reset") {
+          return { token: "secret" };
+        }
+        throw new Error(`unexpected command: ${command}`);
+      },
+    );
+    const schema = defineConfig({ token: keyring(String, { id: "tok" }) });
+    const config = new Configurate({
+      schema,
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    const opts = { service: "svc", account: "acc" };
+
+    const created = await config.create({ token: "secret" } as never).unlock(opts);
+    const reset = await config.reset({ token: "secret" } as never).unlock(opts);
+
+    const writes = (
+      invokeMock.mock.calls as Array<[string, { payload: Record<string, unknown> }]>
+    ).filter(([cmd]) => cmd !== "plugin:configurate|load");
+    expect(writes).toHaveLength(2);
+    for (const [, args] of writes) {
+      expect(args.payload.returnData).toBe(true);
+    }
+    expect(created.data).toEqual({ token: "secret" });
+    expect(reset.data).toEqual({ token: "secret" });
+  });
+});
