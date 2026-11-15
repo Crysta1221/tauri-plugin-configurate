@@ -7,5 +7,5 @@
     "rootDir": "./guest-js"
   },
   "include": ["guest-js/**/*.ts"],
-  "exclude": ["guest-js/**/*.test.ts", "dist-js", "node_modules"]
+  "exclude": ["guest-js/**/*.test.ts", "guest-js/**/*.test-d.ts", "dist-js", "node_modules"]
 }

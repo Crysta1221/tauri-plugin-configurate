@@ -157,79 +157,46 @@ export type HasDuplicateKeyringIds<S extends SchemaObject> = true extends {
 // Type inference (locked = keyring fields replaced with null)
 // ---------------------------------------------------------------------------
 
-/** Infers the locked (keyring fields = null) TypeScript type from a SchemaObject. */
-export type InferLocked<S extends SchemaObject> = {
-  [K in keyof S]: S[K] extends OptionalField<infer V>
-    ?
-        | (V extends KeyringField<unknown, string>
-            ? null
-            : V extends SchemaArray
-              ? V[0] extends KeyringField<unknown, string>
-                ? null[]
-                : V[0] extends PrimitiveConstructor
-                  ? InferPrimitive<V[0]>[]
-                  : V[0] extends SchemaObject
-                    ? InferLocked<V[0]>[]
-                    : never
-              : V extends SchemaObject
-                ? InferLocked<V>
-                : V extends PrimitiveConstructor
-                  ? InferPrimitive<V>
-                  : never)
-        | undefined
-    : S[K] extends KeyringField<unknown, string>
+/** Keys of `S` whose schema is wrapped in `optional()`. */
+type OptionalKeys<S extends SchemaObject> = {
+  [K in keyof S]: S[K] extends OptionalField<OptionalInner> ? K : never;
+}[keyof S];
+
+/** Re-maps an intersection into a single object type (keeps `?` modifiers). */
+type Flatten<T> = { [K in keyof T]: T[K] };
+
+/**
+ * Builds an object type from a schema: keys wrapped in `optional()` become
+ * `key?: T | undefined`, so object literals may omit them; all others stay required.
+ */
+type InferObject<S extends SchemaObject, Locked extends boolean> = Flatten<
+  {
+    [K in Exclude<keyof S, OptionalKeys<S>>]: InferValue<S[K], Locked>;
+  } & {
+    [K in OptionalKeys<S>]?:
+      | (S[K] extends OptionalField<infer V> ? InferValue<V, Locked> : never)
+      | undefined;
+  }
+>;
+
+type InferValue<V, Locked extends boolean> =
+  V extends KeyringField<infer T, string>
+    ? Locked extends true
       ? null
-      : S[K] extends SchemaArray
-        ? S[K][0] extends KeyringField<unknown, string>
-          ? null[]
-          : S[K][0] extends PrimitiveConstructor
-            ? InferPrimitive<S[K][0]>[]
-            : S[K][0] extends SchemaObject
-              ? InferLocked<S[K][0]>[]
-              : never
-        : S[K] extends SchemaObject
-          ? InferLocked<S[K]>
-          : S[K] extends PrimitiveConstructor
-            ? InferPrimitive<S[K]>
-            : never;
-};
+      : T
+    : V extends SchemaArray
+      ? InferValue<V[0], Locked>[]
+      : V extends SchemaObject
+        ? InferObject<V, Locked>
+        : V extends PrimitiveConstructor
+          ? InferPrimitive<V>
+          : never;
+
+/** Infers the locked (keyring fields = null) TypeScript type from a SchemaObject. */
+export type InferLocked<S extends SchemaObject> = InferObject<S, true>;
 
 /** Infers the unlocked (keyring fields = actual type) TypeScript type from a SchemaObject. */
-export type InferUnlocked<S extends SchemaObject> = {
-  [K in keyof S]: S[K] extends OptionalField<infer V>
-    ?
-        | (V extends KeyringField<infer T, string>
-            ? T
-            : V extends SchemaArray
-              ? V[0] extends KeyringField<infer T, string>
-                ? T[]
-                : V[0] extends PrimitiveConstructor
-                  ? InferPrimitive<V[0]>[]
-                  : V[0] extends SchemaObject
-                    ? InferUnlocked<V[0]>[]
-                    : never
-              : V extends SchemaObject
-                ? InferUnlocked<V>
-                : V extends PrimitiveConstructor
-                  ? InferPrimitive<V>
-                  : never)
-        | undefined
-    : S[K] extends KeyringField<infer T, string>
-      ? T
-      : S[K] extends SchemaArray
-        ? S[K][0] extends KeyringField<infer T, string>
-          ? T[]
-          : S[K][0] extends PrimitiveConstructor
-            ? InferPrimitive<S[K][0]>[]
-            : S[K][0] extends SchemaObject
-              ? InferUnlocked<S[K][0]>[]
-              : never
-        : S[K] extends SchemaObject
-          ? InferUnlocked<S[K]>
-          : S[K] extends PrimitiveConstructor
-            ? InferPrimitive<S[K]>
-            : never;
-};
+export type InferUnlocked<S extends SchemaObject> = InferObject<S, false>;
 
 // ---------------------------------------------------------------------------
 // defineConfig helper
