@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## ⚠️ Breaking Changes
+
+- Type-level only: `optional()` fields are now optional keys in `InferLocked` / `InferUnlocked`. Code that annotates such a key as required (`{ x: T | undefined }`) and assigns an inferred config type to it no longer compiles; make the key optional (`x?: T`). Runtime behavior and stored files are unchanged.
+
 ## ✨ Features
 
 - `optional()` fields are now inferred as optional keys (`key?: T | undefined`) in `InferLocked` / `InferUnlocked` at every depth, so object literals for `create()`, `save()`, `defaults` and so on may omit them.
