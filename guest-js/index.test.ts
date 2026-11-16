@@ -304,6 +304,17 @@ describe("defineConfig validation", () => {
     );
   });
 
+  it("should throw on invalid array schema (optional or non-schema element)", async () => {
+    const { defineConfig, optional } = await loadApi(async () => null);
+
+    expect(() => defineConfig({ tags: [optional(String)] as never })).toThrow(
+      "Invalid array schema at 'tags'",
+    );
+    expect(() => defineConfig({ tags: [new Date()] as never })).toThrow(
+      "Invalid array schema at 'tags'",
+    );
+  });
+
   it("should accept valid array schema", async () => {
     const { defineConfig } = await loadApi(async () => null);
 
@@ -355,6 +366,14 @@ describe("Provider creation", () => {
     expect(provider.kind).toBe("binary");
     expect(provider.encryptionKey).toBeUndefined();
     expect(provider.kdf).toBeUndefined();
+  });
+
+  it("isProvider should reject invalid kdf strings", async () => {
+    const { BinaryProvider, isProvider } = await loadApi(async () => null);
+    expect(isProvider(BinaryProvider())).toBe(true);
+    expect(isProvider(BinaryProvider({ encryptionKey: "k", kdf: "sha256" }))).toBe(true);
+    expect(isProvider(BinaryProvider({ encryptionKey: "k", kdf: "argon2" }))).toBe(true);
+    expect(isProvider(BinaryProvider({ encryptionKey: "k", kdf: "pbkdf2" as never }))).toBe(false);
   });
 });
 
@@ -607,6 +626,21 @@ describe("Single config operations", () => {
       account: "acc",
     });
     expect(invokeMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("reset() should return an instance of LazyResetEntry", async () => {
+    const { Configurate, JsonProvider, LazyResetEntry, defineConfig } = await loadApi(
+      async () => null,
+    );
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "app.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    const entry = config.reset({ theme: "dark" });
+    expect(entry).toBeInstanceOf(LazyResetEntry);
   });
 });
 
@@ -1773,6 +1807,42 @@ describe("Keyring field handling", () => {
     expect(opts.account).toBe("acc");
   });
 
+  it("save with optional keyring set to undefined omits write entry and still requests stale deletion", async () => {
+    const { Configurate, JsonProvider, defineConfig, keyring, optional, invokeMock } =
+      await loadApi(async (command) => {
+        if (command === "plugin:configurate|load") {
+          return { theme: "light", token: null };
+        }
+        if (command === "plugin:configurate|save") {
+          return null;
+        }
+        throw new Error(`unexpected command: ${command}`);
+      });
+
+    const schema = defineConfig({
+      theme: String,
+      token: optional(keyring(String, { id: "tok" })),
+    });
+    const config = new Configurate({
+      schema,
+      fileName: "app.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    await config
+      .save({ theme: "dark", token: undefined })
+      .lock({ service: "svc", account: "acc" })
+      .run();
+
+    const [cmd, args] = invokeMock.mock.calls[1] as [string, Record<string, unknown>];
+    expect(cmd).toBe("plugin:configurate|save");
+    const payload = args.payload as Record<string, unknown>;
+    expect(payload.keyringEntries).toBeUndefined();
+    expect(payload.keyringDeleteIds).toEqual(["tok"]);
+    expect(payload.keyringOptions).toEqual({ service: "svc", account: "acc" });
+  });
+
   it("reset should request stale optional keyring deletion on full replacement", async () => {
     const { Configurate, JsonProvider, defineConfig, keyring, optional, invokeMock } =
       await loadApi(async (command) => {
@@ -2373,6 +2443,7 @@ describe("Value markers: json() / record() / oneOf()", () => {
       [{ shape: () => 1 }, /Expected JSON value, got function/],
       [{ shape: 1n }, /Expected JSON value, got bigint/],
       [{ shortcuts: ["a"] }, /'<root>.shortcuts'. Expected object, got array/],
+      [{ shortcuts: new Date() }, /'<root>.shortcuts'. Expected object, got object/],
       [{ shortcuts: { save: 1 } }, /'<root>.shortcuts.save'. Expected string, got number/],
       [{ panes: { left: { width: "1", tags: [] } } }, /'<root>.panes.left.width'. Expected number/],
       [{ panes: { left: { width: 1 } } }, /'<root>.panes.left.tags'. Missing required key/],
@@ -2466,10 +2537,19 @@ describe("Value markers: json() / record() / oneOf()", () => {
     await expect(config.patch({ shortcuts: { save: null } } as never).run()).rejects.toThrow(
       /'<root>.shortcuts.save'. Expected string, got null/,
     );
-    await expect(config.patch({ shape: undefined } as never).run()).rejects.toThrow(
+    await expect(config.patch({ shape: [1, undefined] } as never).run()).rejects.toThrow(
       /Expected JSON value, got undefined/,
     );
-    expect(config.validatePartial({ maybeTheme: null } as never)).toBeUndefined();
+    expect(
+      config.validatePartial({
+        maybeTheme: null,
+        theme: undefined,
+        __configurate_version__: 1,
+      } as never),
+    ).toBeUndefined();
+    expect(() => config.validate(new Date() as never)).toThrow(
+      /'<root>'. Expected object, got object/,
+    );
     expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
@@ -2808,5 +2888,93 @@ describe("Batch chunking", () => {
     const failed = result.results.secret;
     expect(failed?.ok).toBe(false);
     if (failed && !failed.ok) expect(failed.error.kind).toBe("payload_build_failed");
+  });
+
+  it("saveAll with > 128 total entries reduced to <= 128 by preflight failures still merges batch_call_failed", async () => {
+    const { Configurate, JsonProvider, defineConfig, keyring, invokeMock } = await loadApi(
+      async () => {
+        throw "save_all backend failed";
+      },
+    );
+    const plain = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "p.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    const secret = new Configurate({
+      schema: defineConfig({ token: keyring(String, { id: "tok" }) }),
+      fileName: "k.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    const entries = [
+      ...ids(120).map((id) => ({ id, config: plain, data: { theme: id } as unknown })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        id: `bad${i}`,
+        config: secret,
+        data: { token: "t" } as unknown,
+      })),
+    ];
+
+    const result = await Configurate.saveAll(entries).run();
+    expect(batchCalls(invokeMock, "plugin:configurate|save_all")).toHaveLength(1);
+    expect(Object.keys(result.results)).toHaveLength(130);
+    expect(result.results.e0).toEqual({
+      ok: false,
+      error: { kind: "batch_call_failed", message: "save_all backend failed" },
+    });
+    expect(result.results.e119).toEqual({
+      ok: false,
+      error: { kind: "batch_call_failed", message: "save_all backend failed" },
+    });
+    const preflight = result.results.bad0;
+    expect(preflight?.ok).toBe(false);
+    if (preflight && !preflight.ok) expect(preflight.error.kind).toBe("payload_build_failed");
+  });
+
+  it("patchAll with > 128 total entries reduced to <= 128 by preflight failures still merges batch_call_failed", async () => {
+    const { Configurate, JsonProvider, defineConfig, keyring, invokeMock } = await loadApi(
+      async () => {
+        throw "patch_all backend failed";
+      },
+    );
+    const plain = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "p.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+    const secret = new Configurate({
+      schema: defineConfig({ token: keyring(String, { id: "tok" }) }),
+      fileName: "k.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    const entries = [
+      ...ids(120).map((id) => ({ id, config: plain, data: { theme: id } as unknown })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        id: `bad${i}`,
+        config: secret,
+        data: { token: "t" } as unknown,
+      })),
+    ];
+
+    const result = await Configurate.patchAll(entries).run();
+    expect(batchCalls(invokeMock, "plugin:configurate|patch_all")).toHaveLength(1);
+    expect(Object.keys(result.results)).toHaveLength(130);
+    expect(result.results.e0).toEqual({
+      ok: false,
+      error: { kind: "batch_call_failed", message: "patch_all backend failed" },
+    });
+    expect(result.results.e119).toEqual({
+      ok: false,
+      error: { kind: "batch_call_failed", message: "patch_all backend failed" },
+    });
+    const preflight = result.results.bad9;
+    expect(preflight?.ok).toBe(false);
+    if (preflight && !preflight.ok) expect(preflight.error.kind).toBe("payload_build_failed");
   });
 });

@@ -51,7 +51,9 @@ export type KeyringPayloadEntry = {
 // ---------------------------------------------------------------------------
 
 export function isPlainObject(val: unknown): val is Record<string, unknown> {
-  return typeof val === "object" && val !== null && !Array.isArray(val);
+  if (typeof val !== "object" || val === null || Array.isArray(val)) return false;
+  const proto: unknown = Object.getPrototypeOf(val);
+  return proto === Object.prototype || proto === null;
 }
 
 export function isKeyringField(val: SchemaValue): val is KeyringField<unknown, string> {
@@ -85,16 +87,6 @@ function unwrapOptional(val: SchemaValue): {
     return { schema: (val as OptionalFieldRuntime)._schema, isOptional: true };
   }
   return { schema: val, isOptional: false };
-}
-
-function isSchemaArrayElement(val: unknown): val is SchemaArrayElement {
-  if (isPrimitiveConstructor(val)) return true;
-  if (isKeyringField(val as SchemaValue)) return true;
-  return typeof val === "object" && val !== null && !Array.isArray(val);
-}
-
-export function isSchemaArray(val: SchemaValue): val is SchemaArray {
-  return Array.isArray(val) && val.length === 1 && isSchemaArrayElement(val[0]);
 }
 
 function hasBrand(val: unknown, brand: string): boolean {
@@ -132,14 +124,17 @@ function isValueMarker(val: SchemaValue): boolean {
  * marker as if it were a nested object.
  */
 export function isSchemaObject(val: SchemaValue): val is SchemaObject {
-  return (
-    typeof val === "object" &&
-    val !== null &&
-    !Array.isArray(val) &&
-    !isKeyringField(val) &&
-    !isOptionalField(val) &&
-    !isValueMarker(val)
-  );
+  return isPlainObject(val) && !isKeyringField(val) && !isOptionalField(val) && !isValueMarker(val);
+}
+
+function isSchemaArrayElement(val: unknown): val is SchemaArrayElement {
+  if (isPrimitiveConstructor(val)) return true;
+  const schemaVal = val as SchemaValue;
+  return isKeyringField(schemaVal) || isValueMarker(schemaVal) || isSchemaObject(schemaVal);
+}
+
+export function isSchemaArray(val: SchemaValue): val is SchemaArray {
+  return Array.isArray(val) && val.length === 1 && isSchemaArrayElement(val[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -352,12 +347,18 @@ function collectWriteEntriesInObject(
 ): void {
   if (!isPlainObject(node)) return;
   for (const [key, rawValueSchema] of Object.entries(schema)) {
+    if (!Object.hasOwn(node, key)) continue;
     const keyPath = [...path, key];
     const { schema: valueSchema } = unwrapOptional(rawValueSchema);
 
     if (isKeyringField(valueSchema)) {
-      if (!(key in node)) continue;
       const secret = node[key];
+      if (secret === undefined || secret === null) {
+        if (secret === undefined) {
+          delete node[key];
+        }
+        continue;
+      }
       entries.push({
         id: keyringEntryId(valueSchema._id, keyPath),
         dotpath: dotpathFromPath(keyPath),
@@ -477,12 +478,6 @@ function assertPrimitiveValue(schema: PrimitiveConstructor, value: unknown, path
   }
 }
 
-function isJsonPlainObject(value: unknown): value is Record<string, unknown> {
-  if (!isPlainObject(value)) return false;
-  const proto: unknown = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
-
 /** Checks that `value` survives a JSON round-trip unchanged (`json()` fields). */
 function assertJsonValue(value: unknown, path: string, ancestors: Set<object>): void {
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
@@ -493,7 +488,7 @@ function assertJsonValue(value: unknown, path: string, ancestors: Set<object>): 
     );
   }
   const isArray = Array.isArray(value);
-  if (!isArray && !isJsonPlainObject(value)) {
+  if (!isArray && !isPlainObject(value)) {
     throw new Error(
       `Configurate: schema validation failed at '${path}'. Expected JSON value, got ${valueTypeLabel(value)}.`,
     );
@@ -623,7 +618,7 @@ function assertSchemaObject(
   }
   const objectValue = value as Record<string, unknown>;
   for (const [key, nestedSchema] of Object.entries(schema)) {
-    if (!(key in objectValue)) {
+    if (!Object.hasOwn(objectValue, key)) {
       // Missing key: ok for optional fields, error for required fields
       if (isOptionalField(nestedSchema)) continue;
       throw new Error(
@@ -635,7 +630,7 @@ function assertSchemaObject(
   if (allowUnknownKeys) return;
   for (const key of Object.keys(objectValue)) {
     if (key === CONFIGURATE_VERSION_KEY) continue;
-    if (!(key in schema)) {
+    if (!Object.hasOwn(schema, key)) {
       throw new Error(
         `Configurate: schema validation failed at '${path}.${key}'. Key is not declared in schema.`,
       );
@@ -703,12 +698,14 @@ function assertPartialSchemaObject(
   }
   const objectValue = value as Record<string, unknown>;
   for (const [key, providedValue] of Object.entries(objectValue)) {
-    if (!(key in schema)) {
+    if (key === CONFIGURATE_VERSION_KEY) continue;
+    if (!Object.hasOwn(schema, key)) {
       if (allowUnknownKeys) continue;
       throw new Error(
         `Configurate: schema validation failed at '${path}.${key}'. Key is not declared in schema.`,
       );
     }
+    if (providedValue === undefined) continue;
     assertPartialSchemaValue(schema[key], providedValue, `${path}.${key}`, allowUnknownKeys);
   }
 }
@@ -738,8 +735,11 @@ export function deepMergeDefaults(
 ): Record<string, unknown> {
   const result = { ...data };
   for (const [key, defaultValue] of Object.entries(defaults)) {
-    if (!(key in result) || result[key] === undefined || result[key] === null) {
-      result[key] = defaultValue;
+    if (!Object.hasOwn(result, key) || result[key] === undefined || result[key] === null) {
+      result[key] =
+        typeof defaultValue === "object" && defaultValue !== null
+          ? structuredClone(defaultValue)
+          : defaultValue;
     } else if (isPlainObject(result[key]) && isPlainObject(defaultValue)) {
       const childSchema =
         schema !== undefined && Object.hasOwn(schema, key)

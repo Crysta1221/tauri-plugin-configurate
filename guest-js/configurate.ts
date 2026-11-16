@@ -134,7 +134,11 @@ function containsForbiddenPathChars(component: string): boolean {
 }
 
 function isDotOnlySegment(segment: string): boolean {
-  return segment.length > 0 && [...segment].every((c) => c === ".");
+  if (segment.length === 0) return false;
+  for (let i = 0; i < segment.length; i++) {
+    if (segment[i] !== ".") return false;
+  }
+  return true;
 }
 
 /** Mirrors `validate_path_component` in `src/commands.rs`. */
@@ -359,8 +363,9 @@ type BatchPayloadEntry = { id: string; payload: Record<string, unknown> };
 async function invokeBatch(
   command: string,
   entries: BatchPayloadEntry[],
+  split = entries.length > MAX_BATCH_ENTRIES,
 ): Promise<Record<string, BatchRunEntryResult>> {
-  if (entries.length <= MAX_BATCH_ENTRIES) {
+  if (!split) {
     const result = await invoke<BatchRunResult>(command, { payload: { entries } });
     return result.results;
   }
@@ -740,7 +745,11 @@ class SaveAllBuilder {
       return { results: preflightResults };
     }
 
-    const backendResults = await invokeBatch("plugin:configurate|save_all", payloadEntries);
+    const backendResults = await invokeBatch(
+      "plugin:configurate|save_all",
+      payloadEntries,
+      this._entries.length > MAX_BATCH_ENTRIES,
+    );
     return {
       results: {
         ...backendResults,
@@ -819,7 +828,11 @@ class PatchAllBuilder {
       return { results: preflightResults };
     }
 
-    const backendResults = await invokeBatch("plugin:configurate|patch_all", payloadEntries);
+    const backendResults = await invokeBatch(
+      "plugin:configurate|patch_all",
+      payloadEntries,
+      this._entries.length > MAX_BATCH_ENTRIES,
+    );
     return {
       results: {
         ...backendResults,
@@ -955,8 +968,8 @@ export class Configurate<S extends SchemaObject> {
    * Resets the config by deleting existing data and re-creating it with
    * the provided default data.
    */
-  reset(data: InferUnlocked<S>): LazyConfigEntry<S> {
-    return new LazyResetEntry(this, data) as unknown as LazyConfigEntry<S>;
+  reset(data: InferUnlocked<S>): LazyResetEntry<S> {
+    return new LazyResetEntry(this, data);
   }
 
   /**
@@ -1553,8 +1566,8 @@ export function configDiff(
 
   for (const key of allKeys) {
     const path = prefix ? `${prefix}.${key}` : key;
-    const inOld = key in oldData;
-    const inNew = key in newData;
+    const inOld = Object.hasOwn(oldData, key);
+    const inNew = Object.hasOwn(newData, key);
 
     if (!inOld && inNew) {
       entries.push({ path, type: "added", newValue: newData[key] });
@@ -1589,7 +1602,7 @@ function deepEqual(a: unknown, b: unknown, depth = 0): boolean {
   if (depth > MAX_DIFF_DEPTH) {
     throw new Error("configDiff: maximum nesting depth exceeded");
   }
-  if (a === b) return true;
+  if (Object.is(a, b)) return true;
   if (a === null || b === null) return false;
   if (typeof a !== typeof b) return false;
 
@@ -1603,6 +1616,7 @@ function deepEqual(a: unknown, b: unknown, depth = 0): boolean {
     const bObj = b as Record<string, unknown>;
     const keys = new Set([...Object.keys(aObj), ...Object.keys(bObj)]);
     for (const key of keys) {
+      if (!Object.hasOwn(aObj, key) || !Object.hasOwn(bObj, key)) return false;
       if (!deepEqual(aObj[key], bObj[key], depth + 1)) return false;
     }
     return true;
