@@ -336,6 +336,56 @@ fn keyring_pair<'a>(
     }
 }
 
+/// Validates keyring write payload semantics, allowing `keyringOptions` without
+/// `keyringEntries` when stale keyring IDs are being deleted.
+fn keyring_write_pair<'a>(
+    op: &str,
+    keyring_entries: &'a Option<Vec<KeyringEntry>>,
+    keyring_options: &'a Option<KeyringOptions>,
+    keyring_delete_ids: &[String],
+) -> Result<Option<(&'a [KeyringEntry], &'a KeyringOptions)>> {
+    validate_keyring_delete_ids(keyring_delete_ids)?;
+    match (keyring_entries.as_deref(), keyring_options.as_ref()) {
+        (Some(entries), Some(opts)) => {
+            validate_keyring_entries(entries, KeyringEntryUse::Write)?;
+            Ok(Some((entries, opts)))
+        }
+        (None, Some(_)) if !keyring_delete_ids.is_empty() => Ok(None),
+        (None, None) => Ok(None),
+        (Some(_), None) => Err(Error::InvalidPayload(format!(
+            "invalid '{}' payload: keyringEntries provided without keyringOptions",
+            op
+        ))),
+        (None, Some(_)) => Err(Error::InvalidPayload(format!(
+            "invalid '{}' payload: keyringOptions provided without keyringEntries",
+            op
+        ))),
+    }
+}
+
+/// Builds the unlocked config payload returned to callers when both `withUnlock`
+/// and `returnData` are enabled, restoring serialized keyring entries before
+/// on-disk nullification.
+fn build_unlocked_data(
+    data: &Value,
+    with_unlock: bool,
+    return_data: bool,
+    keyring_entries: Option<&[KeyringEntry]>,
+) -> Result<Option<Value>> {
+    if !(with_unlock && return_data) {
+        return Ok(None);
+    }
+    let mut unlocked = data.clone();
+    if let Some(entries) = keyring_entries {
+        for entry in entries {
+            let val: Value = serde_json::from_str(&entry.value)
+                .unwrap_or_else(|_| Value::String(entry.value.clone()));
+            dotpath::set(&mut unlocked, &entry.dotpath, val)?;
+        }
+    }
+    Ok(Some(unlocked))
+}
+
 fn load_plain_data<R: Runtime>(
     app: &AppHandle<R>,
     payload: &NormalizedConfiguratePayload,
@@ -394,18 +444,19 @@ fn execute_create<R: Runtime>(
         .take()
         .unwrap_or(Value::Object(serde_json::Map::new()));
 
-    // Keep a copy for the unlocked response before nullifying secrets.
-    let unlocked_data = if payload.with_unlock && payload.return_data {
-        Some(data.clone())
-    } else {
-        None
-    };
-
-    let keyring = keyring_pair(
+    let keyring = keyring_write_pair(
         "create",
-        KeyringEntryUse::Write,
         &payload.keyring_entries,
         &payload.keyring_options,
+        &payload.keyring_delete_ids,
+    )?;
+
+    // Keep a copy for the unlocked response before nullifying secrets.
+    let unlocked_data = build_unlocked_data(
+        &data,
+        payload.with_unlock,
+        payload.return_data,
+        keyring.as_ref().map(|(entries, _)| *entries),
     )?;
 
     // Nullify secrets in the on-disk data before saving.
@@ -452,17 +503,18 @@ fn execute_save<R: Runtime>(
         .take()
         .unwrap_or(Value::Object(serde_json::Map::new()));
 
-    let unlocked_data = if payload.with_unlock && payload.return_data {
-        Some(data.clone())
-    } else {
-        None
-    };
-
-    let keyring = keyring_pair(
+    let keyring = keyring_write_pair(
         "save",
-        KeyringEntryUse::Write,
         &payload.keyring_entries,
         &payload.keyring_options,
+        &payload.keyring_delete_ids,
+    )?;
+
+    let unlocked_data = build_unlocked_data(
+        &data,
+        payload.with_unlock,
+        payload.return_data,
+        keyring.as_ref().map(|(entries, _)| *entries),
     )?;
 
     // Nullify secrets in the on-disk data before saving.
@@ -495,20 +547,20 @@ fn execute_delete<R: Runtime>(
     app: &AppHandle<R>,
     payload: NormalizedConfiguratePayload,
 ) -> Result<()> {
+    let keyring = keyring_pair(
+        "delete",
+        KeyringEntryUse::Read,
+        &payload.keyring_entries,
+        &payload.keyring_options,
+    )?;
+
     // Delete storage first so that if it fails the keyring entries are
     // preserved and the user can retry without data loss.
     // If storage deletion succeeds but keyring cleanup fails later, the
     // worst case is orphaned (but harmless) entries in the OS keyring.
     delete_plain_data(app, &payload)?;
 
-    if let Some((entries, opts)) =
-        keyring_pair(
-            "delete",
-            KeyringEntryUse::Read,
-            &payload.keyring_entries,
-            &payload.keyring_options,
-        )?
-    {
+    if let Some((entries, opts)) = keyring {
         let mut failures: Vec<String> = Vec::new();
         for entry in entries {
             if let Err(e) = keyring_store::delete(opts, &entry.id) {
@@ -825,17 +877,18 @@ fn execute_patch<R: Runtime>(
 
     deep_merge(&mut existing, patch_data);
 
-    let unlocked_data = if payload.with_unlock && payload.return_data {
-        Some(existing.clone())
-    } else {
-        None
-    };
-
-    let keyring = keyring_pair(
+    let keyring = keyring_write_pair(
         "patch",
-        KeyringEntryUse::Write,
         &payload.keyring_entries,
         &payload.keyring_options,
+        &payload.keyring_delete_ids,
+    )?;
+
+    let unlocked_data = build_unlocked_data(
+        &existing,
+        payload.with_unlock,
+        payload.return_data,
+        keyring.as_ref().map(|(entries, _)| *entries),
     )?;
 
     // Nullify secrets in the on-disk data before saving.
@@ -1593,5 +1646,94 @@ mod tests {
         let content = "x".repeat(max_read_bytes + 1);
         let err = parse_import_content("json", &content, max_read_bytes).unwrap_err();
         assert!(err.to_string().contains("maximum size"));
+    }
+
+    #[test]
+    fn keyring_write_pair_allows_options_only_when_delete_ids_present() {
+        let opts = Some(KeyringOptions {
+            service: "svc".to_string(),
+            account: "acc".to_string(),
+        });
+        let delete_ids = vec!["old-key".to_string()];
+        let res = keyring_write_pair("save", &None, &opts, &delete_ids).unwrap();
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn keyring_write_pair_rejects_options_without_entries_and_empty_delete_ids() {
+        let opts = Some(KeyringOptions {
+            service: "svc".to_string(),
+            account: "acc".to_string(),
+        });
+        let err = keyring_write_pair("save", &None, &opts, &[]).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("keyringOptions provided without keyringEntries"));
+    }
+
+    #[test]
+    fn keyring_write_pair_rejects_invalid_delete_ids() {
+        let opts = Some(KeyringOptions {
+            service: "svc".to_string(),
+            account: "acc".to_string(),
+        });
+        assert!(keyring_write_pair("save", &None, &opts, &["".to_string()]).is_err());
+        assert!(keyring_write_pair("save", &None, &opts, &["bad/id".to_string()]).is_err());
+    }
+
+    #[test]
+    fn build_unlocked_data_restores_serialized_keyring_entries() {
+        let data = json!({
+            "apiKey": null,
+            "nested": { "pin": null },
+            "plain": "hello"
+        });
+        let entries = vec![
+            KeyringEntry {
+                id: "api-key".to_string(),
+                dotpath: "apiKey".to_string(),
+                value: "\"secret\"".to_string(),
+                is_optional: false,
+            },
+            KeyringEntry {
+                id: "pin".to_string(),
+                dotpath: "nested.pin".to_string(),
+                value: "42".to_string(),
+                is_optional: false,
+            },
+        ];
+
+        let unlocked = build_unlocked_data(&data, true, true, Some(&entries))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            unlocked,
+            json!({
+                "apiKey": "secret",
+                "nested": { "pin": 42 },
+                "plain": "hello"
+            })
+        );
+    }
+
+    #[test]
+    fn build_unlocked_data_returns_none_when_disabled() {
+        let data = json!({ "apiKey": null });
+        let entries = vec![KeyringEntry {
+            id: "api-key".to_string(),
+            dotpath: "apiKey".to_string(),
+            value: "\"secret\"".to_string(),
+            is_optional: false,
+        }];
+
+        assert!(build_unlocked_data(&data, false, true, Some(&entries))
+            .unwrap()
+            .is_none());
+        assert!(build_unlocked_data(&data, true, false, Some(&entries))
+            .unwrap()
+            .is_none());
+        assert!(build_unlocked_data(&data, false, false, Some(&entries))
+            .unwrap()
+            .is_none());
     }
 }
