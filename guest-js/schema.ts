@@ -40,8 +40,16 @@ export interface KeyringFieldOptions<Id extends string> {
  * It is used as part of the OS keyring user string (`{account}/{id}`),
  * so `/` would create an ambiguous path-like structure.
  */
+export function keyring<C extends PrimitiveConstructor, const Id extends string>(
+  typeCtor: C,
+  opts: KeyringFieldOptions<Id>,
+): KeyringField<InferPrimitive<C>, Id>;
+export function keyring<T, const Id extends string>(
+  typeCtor: (abstract new (...args: never[]) => T) | ((...args: never[]) => T),
+  opts: KeyringFieldOptions<Id>,
+): KeyringField<T, Id>;
 export function keyring<T, Id extends string>(
-  typeCtor: abstract new (...args: never[]) => T | ((...args: never[]) => T),
+  typeCtor: (abstract new (...args: never[]) => T) | ((...args: never[]) => T),
   opts: KeyringFieldOptions<Id>,
 ): KeyringField<T, Id> {
   if (!opts.id) {
@@ -235,31 +243,32 @@ export type SchemaObject = { [key: string]: SchemaValue };
 // Type-level keyring id collection (used for duplicate detection)
 // ---------------------------------------------------------------------------
 
-export type CollectKeyringIds<S extends SchemaObject> = {
-  [K in keyof S]: S[K] extends SchemaMarker
-    ? never
-    : S[K] extends KeyringField<unknown, infer Id>
-      ? Id
-      : S[K] extends OptionalField<infer V>
-        ? V extends SchemaMarker
-          ? never
-          : V extends KeyringField<unknown, infer Id>
-            ? Id
-            : V extends SchemaObject
-              ? CollectKeyringIds<V>
-              : never
-        : S[K] extends SchemaObject
-          ? CollectKeyringIds<S[K]>
+type CollectKeyringIdsFromValue<V> = V extends SchemaMarker
+  ? never
+  : V extends KeyringField<unknown, infer Id>
+    ? Id
+    : V extends OptionalField<infer Inner>
+      ? CollectKeyringIdsFromValue<Inner>
+      : V extends SchemaArray
+        ? CollectKeyringIdsFromValue<V[0]>
+        : V extends SchemaObject
+          ? CollectKeyringIds<V>
           : never;
+
+export type CollectKeyringIds<S extends SchemaObject> = {
+  [K in keyof S]: CollectKeyringIdsFromValue<S[K]>;
 }[keyof S];
 
 type IsDuplicate<T extends string, All extends string> = T extends Exclude<All, T> ? true : false;
 
-export type HasDuplicateKeyringIds<S extends SchemaObject> = true extends {
-  [Id in CollectKeyringIds<S>]: IsDuplicate<Id, CollectKeyringIds<S>>;
-}[CollectKeyringIds<S>]
-  ? true
-  : false;
+export type HasDuplicateKeyringIds<S extends SchemaObject> =
+  CollectKeyringIds<S> extends infer Ids extends string
+    ? true extends {
+        [Id in Ids]: IsDuplicate<Id, Ids>;
+      }[Ids]
+      ? true
+      : false
+    : false;
 
 // ---------------------------------------------------------------------------
 // Type inference (locked = keyring fields replaced with null)

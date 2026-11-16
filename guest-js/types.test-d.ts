@@ -82,6 +82,7 @@ const secretSchema = defineConfig({
 
 export type OptionalKeyringTests = [
   Expect<Equal<InferLocked<typeof secretSchema>, { token?: null | undefined }>>,
+  Expect<Equal<InferUnlocked<typeof secretSchema>, { token?: string | undefined }>>,
 ];
 
 export const omitsOptionalKeyring: InferUnlocked<typeof secretSchema> = {};
@@ -156,6 +157,7 @@ export type MarkerTests = [
   // Same inference when locked; markers never become null.
   Expect<Equal<InferLocked<typeof markerSchema>["shape"], Shape>>,
   Expect<Equal<InferLocked<typeof markerSchema>["token"], null>>,
+  Expect<Equal<MarkerData["token"], string>>,
 ];
 
 // Markers are never walked as nested objects for keyring ids.
@@ -167,6 +169,28 @@ const markerOnlySchema = defineConfig({
 });
 export type MarkerKeyringIdTests = [
   Expect<Equal<CollectKeyringIds<typeof markerOnlySchema>, never>>,
+];
+
+// CollectKeyringIds traverses arrays (both top-level and inside optional()).
+const arrayKeyringSchema = defineConfig({
+  items: [keyring(String, { id: "arr-k" })],
+  maybeItems: optional([keyring(Number, { id: "opt-arr-k" })]),
+  nestedItems: [{ secret: keyring(Boolean, { id: "nested-arr-k" }) }],
+});
+export type ArrayKeyringIdTests = [
+  Expect<
+    Equal<CollectKeyringIds<typeof arrayKeyringSchema>, "arr-k" | "opt-arr-k" | "nested-arr-k">
+  >,
+  Expect<
+    Equal<
+      InferUnlocked<typeof arrayKeyringSchema>,
+      {
+        items: string[];
+        maybeItems?: number[] | undefined;
+        nestedItems: { secret: boolean }[];
+      }
+    >
+  >,
 ];
 
 export const markerValue: InferUnlocked<typeof markerSchema> = {
