@@ -26,7 +26,7 @@ Install the Rust plugin by adding the following to your `Cargo.toml` file:
 
 ```toml
 [dependencies]
-tauri-plugin-configurate = "0.5.2"
+tauri-plugin-configurate = "0.6.0"
 # alternatively with Git:
 # tauri-plugin-configurate = { git = "https://github.com/Crysta1221/tauri-plugin-configurate" }
 ```
@@ -154,7 +154,7 @@ Files are written with object keys sorted alphabetically. To keep the order of t
 
 ```toml
 [dependencies]
-tauri-plugin-configurate = { version = "...", features = ["preserve-order"] }
+tauri-plugin-configurate = { version = "0.6.0", features = ["preserve-order"] }
 ```
 
 Cargo unifies features, so this also makes `serde_json::Map` and `toml::map::Map` keep insertion order for the rest of your app's build. See [commands.md → Key order](./commands.md#key-order-preserve-order-feature) for the exact behavior per format.

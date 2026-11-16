@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-16
+
+# 🚀 0.6.0 Release Notes
+
+Feature and dependency update release adding `json()`, `record()`, `oneOf()`, static `Configurate.list()`, `isNotFoundError()`, `preserve-order`, batch splitting over 128 entries, and `tsdown` builds.
+
 ## ⚠️ Breaking Changes
 
 - Type-level only: `optional()` fields are now optional keys in `InferLocked` / `InferUnlocked`. Code that annotates such a key as required (`{ x: T | undefined }`) and assigns an inferred config type to it no longer compiles; make the key optional (`x?: T`). Runtime behavior and stored files are unchanged.
@@ -29,6 +35,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `keyring(String | Number | Boolean, ...)` inferring boxed wrapper types instead of primitives, added compile-time duplicate keyring ID checking inside schema arrays (`CollectKeyringIds`), and fixed `Configurate.reset()`'s return type to `LazyResetEntry<S>`.
 - Fixed stale keyring entry deletion when saving/resetting configs with no active keyring writes, returning written keyring values from `.unlock()` on `create()` / `save()` / `reset()` / `patch()`, validating keyring payloads before deleting files in `execute_delete`, and skipping `undefined`/`null` optional keyring writes instead of storing `"null"`.
 - Tightened `isPlainObject`, schema array validation, `assertPartialSchemaObject`, `deepMergeDefaults` cloning, `isBinaryProvider` KDF validation, and split-batch error merging when preflight failures reduce a batch to 128 or fewer entries; exported `Configurate` and `ConfigChangeEvent` from the Rust crate root.
+
+## 📦 Install
+
+```toml
+tauri-plugin-configurate = "0.6.0"
+```
+
+```sh
+npm add tauri-plugin-configurate-api@0.6.0
+```
 
 ## [0.5.2] - 2026-06-18
 
@@ -122,7 +138,8 @@ tauri-plugin-configurate = "0.5.0"
 npm add tauri-plugin-configurate-api@0.5.0
 ```
 
-[Unreleased]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.4.2...v0.5.0
