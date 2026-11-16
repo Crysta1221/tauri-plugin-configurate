@@ -13,28 +13,23 @@ export const KEYRING_BRAND_KEY = "__configurate_keyring__" as const;
 export const KEYRING_RUNTIME_TYPE_KEY = "__configurate_keyring_type__" as const;
 export const CONFIGURATE_VERSION_KEY = "__configurate_version__" as const;
 export const OPTIONAL_BRAND_KEY = "__configurate_optional__" as const;
+export const JSON_BRAND_KEY = "__configurate_json__" as const;
+export const RECORD_BRAND_KEY = "__configurate_record__" as const;
+export const ONE_OF_BRAND_KEY = "__configurate_one_of__" as const;
 
 // ---------------------------------------------------------------------------
 // Shared type imports from schema.ts
 // (type-only — erased at build time, no circular runtime dependency)
 // ---------------------------------------------------------------------------
 
-import type {
-  KeyringField,
-  SchemaObject,
-  SchemaValue,
-  SchemaArray,
-  MigrationStep,
-} from "./schema";
+import type { KeyringField, SchemaObject, SchemaValue, SchemaArray, MigrationStep } from "./schema";
 
-type PrimitiveConstructor =
-  | StringConstructor
-  | NumberConstructor
-  | BooleanConstructor;
-type SchemaArrayElement =
-  | PrimitiveConstructor
-  | KeyringField<unknown, string>
-  | SchemaObject;
+type PrimitiveConstructor = StringConstructor | NumberConstructor | BooleanConstructor;
+type SchemaArrayElement = SchemaArray[0];
+
+// Value markers (structural duck-types — enough for runtime checks)
+type RecordFieldRuntime = { [RECORD_BRAND_KEY]: true; _schema: SchemaValue };
+type OneOfFieldRuntime = { [ONE_OF_BRAND_KEY]: true; _values: readonly string[] };
 type KeyringPath = Array<string | number>;
 
 // OptionalField (structural duck-type — enough for runtime checks)
@@ -56,12 +51,12 @@ export type KeyringPayloadEntry = {
 // ---------------------------------------------------------------------------
 
 export function isPlainObject(val: unknown): val is Record<string, unknown> {
-  return typeof val === "object" && val !== null && !Array.isArray(val);
+  if (typeof val !== "object" || val === null || Array.isArray(val)) return false;
+  const proto: unknown = Object.getPrototypeOf(val);
+  return proto === Object.prototype || proto === null;
 }
 
-export function isKeyringField(
-  val: SchemaValue,
-): val is KeyringField<unknown, string> {
+export function isKeyringField(val: SchemaValue): val is KeyringField<unknown, string> {
   return (
     typeof val === "object" &&
     val !== null &&
@@ -69,16 +64,12 @@ export function isKeyringField(
   );
 }
 
-export function isPrimitiveConstructor(
-  val: unknown,
-): val is PrimitiveConstructor {
+export function isPrimitiveConstructor(val: unknown): val is PrimitiveConstructor {
   return val === String || val === Number || val === Boolean;
 }
 
 /** Returns true when `val` is an `OptionalField` marker produced by `optional()`. */
-export function isOptionalField(
-  val: SchemaValue,
-): val is SchemaValue & OptionalFieldRuntime {
+export function isOptionalField(val: SchemaValue): val is SchemaValue & OptionalFieldRuntime {
   return (
     typeof val === "object" &&
     val !== null &&
@@ -98,56 +89,106 @@ function unwrapOptional(val: SchemaValue): {
   return { schema: val, isOptional: false };
 }
 
+function hasBrand(val: unknown, brand: string): boolean {
+  return (
+    typeof val === "object" &&
+    val !== null &&
+    !Array.isArray(val) &&
+    (val as Record<string, unknown>)[brand] === true
+  );
+}
+
+/** Returns true for a `json()` marker. */
+export function isJsonField(val: SchemaValue): boolean {
+  return hasBrand(val, JSON_BRAND_KEY);
+}
+
+/** Returns true for a `record()` marker. */
+export function isRecordField(val: SchemaValue): val is SchemaValue & RecordFieldRuntime {
+  return hasBrand(val, RECORD_BRAND_KEY);
+}
+
+/** Returns true for a `oneOf()` marker. */
+export function isOneOfField(val: SchemaValue): val is SchemaValue & OneOfFieldRuntime {
+  return hasBrand(val, ONE_OF_BRAND_KEY);
+}
+
+/** Returns true for any value marker (`json()`, `record()`, `oneOf()`). */
+function isValueMarker(val: SchemaValue): boolean {
+  return isJsonField(val) || isRecordField(val) || isOneOfField(val);
+}
+
+/**
+ * Returns true for a nested schema object. Every marker is excluded here, so
+ * the schema walkers (keyring collection, validation) never recurse into a
+ * marker as if it were a nested object.
+ */
+export function isSchemaObject(val: SchemaValue): val is SchemaObject {
+  return isPlainObject(val) && !isKeyringField(val) && !isOptionalField(val) && !isValueMarker(val);
+}
+
 function isSchemaArrayElement(val: unknown): val is SchemaArrayElement {
   if (isPrimitiveConstructor(val)) return true;
-  if (isKeyringField(val as SchemaValue)) return true;
-  return typeof val === "object" && val !== null && !Array.isArray(val);
+  const schemaVal = val as SchemaValue;
+  return isKeyringField(schemaVal) || isValueMarker(schemaVal) || isSchemaObject(schemaVal);
 }
 
 export function isSchemaArray(val: SchemaValue): val is SchemaArray {
   return Array.isArray(val) && val.length === 1 && isSchemaArrayElement(val[0]);
 }
 
-export function isSchemaObject(val: SchemaValue): val is SchemaObject {
-  return (
-    typeof val === "object" &&
-    val !== null &&
-    !Array.isArray(val) &&
-    !isKeyringField(val) &&
-    !isOptionalField(val)
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Schema introspection
 // ---------------------------------------------------------------------------
 
+/**
+ * Checks the schema shape: array schemas hold exactly one element schema, and
+ * no keyring field sits inside a `record()` (keyring ids are per field path,
+ * so a map with arbitrary keys cannot be mapped onto keyring entries).
+ */
 export function validateSchemaArrays(schema: SchemaObject, prefix = ""): void {
+  validateSchemaObjectShape(schema, prefix, false);
+}
+
+function validateSchemaObjectShape(schema: SchemaObject, prefix: string, inRecord: boolean): void {
   for (const [key, rawVal] of Object.entries(schema)) {
     const path = prefix ? `${prefix}.${key}` : key;
-    const val = isOptionalField(rawVal)
-      ? (rawVal as OptionalFieldRuntime)._schema
-      : rawVal;
-    if (Array.isArray(val) && !isSchemaArray(val as SchemaValue)) {
+    validateSchemaNodeShape(unwrapOptional(rawVal).schema, path, inRecord);
+  }
+}
+
+function validateSchemaNodeShape(val: SchemaValue, path: string, inRecord: boolean): void {
+  if (Array.isArray(val) && !isSchemaArray(val as SchemaValue)) {
+    throw new Error(
+      `Invalid array schema at '${path}'. Arrays must contain exactly one element schema, e.g. [String] or [{ field: String }].`,
+    );
+  }
+  if (inRecord && isKeyringField(val)) {
+    throw new Error(
+      `Invalid schema at '${path}'. keyring() fields are not supported inside record().`,
+    );
+  }
+  if (isRecordField(val)) {
+    if (isOptionalField(val._schema)) {
       throw new Error(
-        `Invalid array schema at '${path}'. Arrays must contain exactly one element schema, e.g. [String] or [{ field: String }].`,
+        `Invalid schema at '${path}'. record() values cannot be optional(); omit the key instead.`,
       );
     }
-    if (isSchemaObject(val)) {
-      validateSchemaArrays(val, path);
-      continue;
-    }
-    if (isSchemaArray(val) && isSchemaObject(val[0])) {
-      validateSchemaArrays(val[0], `${path}[]`);
-    }
+    validateSchemaNodeShape(val._schema, `${path}.*`, true);
+    return;
+  }
+  if (isSchemaObject(val)) {
+    validateSchemaObjectShape(val, path, inRecord);
+    return;
+  }
+  if (isSchemaArray(val)) {
+    validateSchemaNodeShape(val[0], `${path}[]`, inRecord);
   }
 }
 
 export function hasAnyKeyring(schema: SchemaObject): boolean {
   for (const rawVal of Object.values(schema)) {
-    const val = isOptionalField(rawVal)
-      ? (rawVal as OptionalFieldRuntime)._schema
-      : rawVal;
+    const val = isOptionalField(rawVal) ? (rawVal as OptionalFieldRuntime)._schema : rawVal;
     if (isKeyringField(val)) return true;
     if (isSchemaObject(val) && hasAnyKeyring(val)) return true;
     if (isSchemaArray(val)) {
@@ -161,9 +202,7 @@ export function hasAnyKeyring(schema: SchemaObject): boolean {
 
 export function hasArrayKeyring(schema: SchemaObject): boolean {
   for (const rawVal of Object.values(schema)) {
-    const val = isOptionalField(rawVal)
-      ? (rawVal as OptionalFieldRuntime)._schema
-      : rawVal;
+    const val = isOptionalField(rawVal) ? (rawVal as OptionalFieldRuntime)._schema : rawVal;
     if (isSchemaObject(val) && hasArrayKeyring(val)) return true;
     if (!isSchemaArray(val)) continue;
     const element = val[0];
@@ -241,8 +280,7 @@ function collectReadEntriesInObject(
     const { schema: valueSchema, isOptional } = unwrapOptional(rawValueSchema);
     const childNode = objectNode?.[key];
     const keyringIsOptional =
-      missingOptionalAncestor ||
-      (isOptional && (childNode === undefined || childNode === null));
+      missingOptionalAncestor || (isOptional && (childNode === undefined || childNode === null));
 
     if (isKeyringField(valueSchema)) {
       entries.push({
@@ -296,12 +334,7 @@ function collectWriteEntriesInArray(
       continue;
     }
     if (isSchemaObject(elementSchema)) {
-      collectWriteEntriesInObject(
-        elementSchema,
-        node[idx],
-        elementPath,
-        entries,
-      );
+      collectWriteEntriesInObject(elementSchema, node[idx], elementPath, entries);
     }
   }
 }
@@ -314,12 +347,18 @@ function collectWriteEntriesInObject(
 ): void {
   if (!isPlainObject(node)) return;
   for (const [key, rawValueSchema] of Object.entries(schema)) {
+    if (!Object.hasOwn(node, key)) continue;
     const keyPath = [...path, key];
     const { schema: valueSchema } = unwrapOptional(rawValueSchema);
 
     if (isKeyringField(valueSchema)) {
-      if (!(key in node)) continue;
       const secret = node[key];
+      if (secret === undefined || secret === null) {
+        if (secret === undefined) {
+          delete node[key];
+        }
+        continue;
+      }
       entries.push({
         id: keyringEntryId(valueSchema._id, keyPath),
         dotpath: dotpathFromPath(keyPath),
@@ -341,9 +380,7 @@ function collectWriteEntriesInObject(
 export function collectKeyringIds(schema: SchemaObject): string[] {
   const ids: string[] = [];
   for (const rawVal of Object.values(schema)) {
-    const val = isOptionalField(rawVal)
-      ? (rawVal as OptionalFieldRuntime)._schema
-      : rawVal;
+    const val = isOptionalField(rawVal) ? (rawVal as OptionalFieldRuntime)._schema : rawVal;
     if (isKeyringField(val)) {
       ids.push(val._id);
       continue;
@@ -366,8 +403,7 @@ export function collectStaticKeyringPaths(
   prefix = "",
   inheritedOptional = false,
 ): Array<{ id: string; dotpath: string; isOptional?: boolean }> {
-  const result: Array<{ id: string; dotpath: string; isOptional?: boolean }> =
-    [];
+  const result: Array<{ id: string; dotpath: string; isOptional?: boolean }> = [];
   for (const [key, rawValueSchema] of Object.entries(schema)) {
     const path = prefix ? `${prefix}.${key}` : key;
     const { schema: valueSchema, isOptional } = unwrapOptional(rawValueSchema);
@@ -381,9 +417,7 @@ export function collectStaticKeyringPaths(
       continue;
     }
     if (isSchemaObject(valueSchema)) {
-      result.push(
-        ...collectStaticKeyringPaths(valueSchema, path, optionalForPath),
-      );
+      result.push(...collectStaticKeyringPaths(valueSchema, path, optionalForPath));
     }
   }
   return result;
@@ -431,23 +465,96 @@ function primitiveSchemaLabel(schema: PrimitiveConstructor): string {
   return "boolean";
 }
 
-function assertPrimitiveValue(
-  schema: PrimitiveConstructor,
-  value: unknown,
-  path: string,
-): void {
+function assertPrimitiveValue(schema: PrimitiveConstructor, value: unknown, path: string): void {
   const expected = primitiveSchemaLabel(schema);
   const isValid =
     (schema === String && typeof value === "string") ||
-    (schema === Number &&
-      typeof value === "number" &&
-      Number.isFinite(value)) ||
+    (schema === Number && typeof value === "number" && Number.isFinite(value)) ||
     (schema === Boolean && typeof value === "boolean");
   if (!isValid) {
     throw new Error(
       `Configurate: schema validation failed at '${path}'. Expected ${expected}, got ${valueTypeLabel(value)}.`,
     );
   }
+}
+
+/** Checks that `value` survives a JSON round-trip unchanged (`json()` fields). */
+function assertJsonValue(value: unknown, path: string, ancestors: Set<object>): void {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return;
+    throw new Error(
+      `Configurate: schema validation failed at '${path}'. Expected JSON value, got non-finite number.`,
+    );
+  }
+  const isArray = Array.isArray(value);
+  if (!isArray && !isPlainObject(value)) {
+    throw new Error(
+      `Configurate: schema validation failed at '${path}'. Expected JSON value, got ${valueTypeLabel(value)}.`,
+    );
+  }
+  if (ancestors.has(value)) {
+    throw new Error(
+      `Configurate: schema validation failed at '${path}'. Expected JSON value, got circular reference.`,
+    );
+  }
+  ancestors.add(value);
+  if (isArray) {
+    for (let idx = 0; idx < value.length; idx++) {
+      assertJsonValue(value[idx], `${path}[${idx}]`, ancestors);
+    }
+  } else {
+    for (const [key, child] of Object.entries(value)) {
+      // JSON.stringify drops undefined properties, so they are not an error.
+      if (child === undefined) continue;
+      assertJsonValue(child, `${path}.${key}`, ancestors);
+    }
+  }
+  ancestors.delete(value);
+}
+
+/**
+ * Validates `json()` / `oneOf()` / `record()` values. Returns false when
+ * `schemaValue` is not a value marker. In `partial` mode record entries are
+ * checked like patch data (they are deep-merged into the stored entry).
+ */
+function assertMarkerValue(
+  schemaValue: SchemaValue,
+  value: unknown,
+  path: string,
+  allowUnknownKeys: boolean,
+  partial: boolean,
+): boolean {
+  if (isJsonField(schemaValue)) {
+    assertJsonValue(value, path, new Set());
+    return true;
+  }
+  if (isOneOfField(schemaValue)) {
+    if (typeof value !== "string" || !schemaValue._values.includes(value)) {
+      const allowed = schemaValue._values.map((v) => JSON.stringify(v)).join(", ");
+      const got = typeof value === "string" ? JSON.stringify(value) : valueTypeLabel(value);
+      throw new Error(
+        `Configurate: schema validation failed at '${path}'. Expected one of ${allowed}, got ${got}.`,
+      );
+    }
+    return true;
+  }
+  if (isRecordField(schemaValue)) {
+    if (!isPlainObject(value)) {
+      throw new Error(
+        `Configurate: schema validation failed at '${path}'. Expected object, got ${valueTypeLabel(value)}.`,
+      );
+    }
+    for (const [key, entry] of Object.entries(value)) {
+      if (partial) {
+        assertPartialSchemaValue(schemaValue._schema, entry, `${path}.${key}`, allowUnknownKeys);
+      } else {
+        assertSchemaValue(schemaValue._schema, entry, `${path}.${key}`, allowUnknownKeys);
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
 function keyringPrimitiveSchema(
@@ -472,26 +579,20 @@ function assertSchemaValue(
   if (isKeyringField(schemaValue)) {
     if (value === null) return;
     const primitiveSchema = keyringPrimitiveSchema(schemaValue);
-    if (primitiveSchema !== undefined)
-      assertPrimitiveValue(primitiveSchema, value, path);
+    if (primitiveSchema !== undefined) assertPrimitiveValue(primitiveSchema, value, path);
     return;
   }
-  if (
-    schemaValue === String ||
-    schemaValue === Number ||
-    schemaValue === Boolean
-  ) {
+  if (schemaValue === String || schemaValue === Number || schemaValue === Boolean) {
     assertPrimitiveValue(schemaValue, value, path);
     return;
   }
+  if (assertMarkerValue(schemaValue, value, path, allowUnknownKeys, false)) return;
   if (isSchemaObject(schemaValue)) {
     assertSchemaObject(schemaValue, value, path, allowUnknownKeys);
     return;
   }
   if (!isSchemaArray(schemaValue)) {
-    throw new Error(
-      `Configurate: schema validation failed at '${path}'. Unsupported schema node.`,
-    );
+    throw new Error(`Configurate: schema validation failed at '${path}'. Unsupported schema node.`);
   }
   if (!Array.isArray(value)) {
     throw new Error(
@@ -500,12 +601,7 @@ function assertSchemaValue(
   }
   const elementSchema = schemaValue[0];
   for (let idx = 0; idx < value.length; idx++) {
-    assertSchemaValue(
-      elementSchema,
-      value[idx],
-      `${path}[${idx}]`,
-      allowUnknownKeys,
-    );
+    assertSchemaValue(elementSchema, value[idx], `${path}[${idx}]`, allowUnknownKeys);
   }
 }
 
@@ -522,24 +618,19 @@ function assertSchemaObject(
   }
   const objectValue = value as Record<string, unknown>;
   for (const [key, nestedSchema] of Object.entries(schema)) {
-    if (!(key in objectValue)) {
+    if (!Object.hasOwn(objectValue, key)) {
       // Missing key: ok for optional fields, error for required fields
       if (isOptionalField(nestedSchema)) continue;
       throw new Error(
         `Configurate: schema validation failed at '${path}.${key}'. Missing required key.`,
       );
     }
-    assertSchemaValue(
-      nestedSchema,
-      objectValue[key],
-      `${path}.${key}`,
-      allowUnknownKeys,
-    );
+    assertSchemaValue(nestedSchema, objectValue[key], `${path}.${key}`, allowUnknownKeys);
   }
   if (allowUnknownKeys) return;
   for (const key of Object.keys(objectValue)) {
     if (key === CONFIGURATE_VERSION_KEY) continue;
-    if (!(key in schema)) {
+    if (!Object.hasOwn(schema, key)) {
       throw new Error(
         `Configurate: schema validation failed at '${path}.${key}'. Key is not declared in schema.`,
       );
@@ -568,26 +659,20 @@ function assertPartialSchemaValue(
   if (isKeyringField(schemaValue)) {
     if (value === null) return;
     const primitiveSchema = keyringPrimitiveSchema(schemaValue);
-    if (primitiveSchema !== undefined)
-      assertPrimitiveValue(primitiveSchema, value, path);
+    if (primitiveSchema !== undefined) assertPrimitiveValue(primitiveSchema, value, path);
     return;
   }
-  if (
-    schemaValue === String ||
-    schemaValue === Number ||
-    schemaValue === Boolean
-  ) {
+  if (schemaValue === String || schemaValue === Number || schemaValue === Boolean) {
     assertPrimitiveValue(schemaValue, value, path);
     return;
   }
+  if (assertMarkerValue(schemaValue, value, path, allowUnknownKeys, true)) return;
   if (isSchemaObject(schemaValue)) {
     assertPartialSchemaObject(schemaValue, value, path, allowUnknownKeys);
     return;
   }
   if (!isSchemaArray(schemaValue)) {
-    throw new Error(
-      `Configurate: schema validation failed at '${path}'. Unsupported schema node.`,
-    );
+    throw new Error(`Configurate: schema validation failed at '${path}'. Unsupported schema node.`);
   }
   if (!Array.isArray(value)) {
     throw new Error(
@@ -596,12 +681,7 @@ function assertPartialSchemaValue(
   }
   const elementSchema = schemaValue[0];
   for (let idx = 0; idx < value.length; idx++) {
-    assertSchemaValue(
-      elementSchema,
-      value[idx],
-      `${path}[${idx}]`,
-      allowUnknownKeys,
-    );
+    assertSchemaValue(elementSchema, value[idx], `${path}[${idx}]`, allowUnknownKeys);
   }
 }
 
@@ -618,18 +698,15 @@ function assertPartialSchemaObject(
   }
   const objectValue = value as Record<string, unknown>;
   for (const [key, providedValue] of Object.entries(objectValue)) {
-    if (!(key in schema)) {
+    if (key === CONFIGURATE_VERSION_KEY) continue;
+    if (!Object.hasOwn(schema, key)) {
       if (allowUnknownKeys) continue;
       throw new Error(
         `Configurate: schema validation failed at '${path}.${key}'. Key is not declared in schema.`,
       );
     }
-    assertPartialSchemaValue(
-      schema[key],
-      providedValue,
-      `${path}.${key}`,
-      allowUnknownKeys,
-    );
+    if (providedValue === undefined) continue;
+    assertPartialSchemaValue(schema[key], providedValue, `${path}.${key}`, allowUnknownKeys);
   }
 }
 
@@ -645,18 +722,34 @@ export function assertPartialDataMatchesSchema(
 // Deep merge defaults and migration
 // ---------------------------------------------------------------------------
 
+/**
+ * Fills keys that are missing, `undefined` or `null` in `data` from
+ * `defaults`, recursing into nested objects. Arrays are never merged. When
+ * `schema` is given, `json()` and `record()` fields are filled only as a
+ * whole: their stored object is never merged with the default one.
+ */
 export function deepMergeDefaults(
   data: Record<string, unknown>,
   defaults: Record<string, unknown>,
+  schema?: SchemaObject,
 ): Record<string, unknown> {
   const result = { ...data };
   for (const [key, defaultValue] of Object.entries(defaults)) {
-    if (!(key in result) || result[key] === undefined || result[key] === null) {
-      result[key] = defaultValue;
+    if (!Object.hasOwn(result, key) || result[key] === undefined || result[key] === null) {
+      result[key] =
+        typeof defaultValue === "object" && defaultValue !== null
+          ? structuredClone(defaultValue)
+          : defaultValue;
     } else if (isPlainObject(result[key]) && isPlainObject(defaultValue)) {
+      const childSchema =
+        schema !== undefined && Object.hasOwn(schema, key)
+          ? unwrapOptional(schema[key]).schema
+          : undefined;
+      if (childSchema !== undefined && isValueMarker(childSchema)) continue;
       result[key] = deepMergeDefaults(
         result[key] as Record<string, unknown>,
         defaultValue as Record<string, unknown>,
+        childSchema !== undefined && isSchemaObject(childSchema) ? childSchema : undefined,
       );
     }
   }
@@ -680,9 +773,7 @@ export function applyMigrations<TData extends Record<string, unknown>>(
   while (dataVersion < currentVersion) {
     const migration = sorted.find((step) => step.version === dataVersion);
     if (!migration) {
-      throw new Error(
-        `Configurate: missing migration step for version ${dataVersion}.`,
-      );
+      throw new Error(`Configurate: missing migration step for version ${dataVersion}.`);
     }
     result = migration.up(result);
     dataVersion = migration.version + 1;
@@ -717,10 +808,7 @@ export function isIoNotFoundError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) {
     return false;
   }
-  if (
-    "io_kind" in error &&
-    (error as { io_kind: unknown }).io_kind === "not_found"
-  ) {
+  if ("io_kind" in error && (error as { io_kind: unknown }).io_kind === "not_found") {
     return true;
   }
   if (
@@ -728,9 +816,7 @@ export function isIoNotFoundError(error: unknown): boolean {
     typeof (error as { message: unknown }).message === "string" &&
     messageLooksLikeNotFound((error as { message: string }).message)
   ) {
-    return (
-      !("kind" in error) || (error as { kind: unknown }).kind === "io"
-    );
+    return !("kind" in error) || (error as { kind: unknown }).kind === "io";
   }
   return false;
 }
@@ -757,7 +843,6 @@ export function toBatchError(
     }
     return result;
   }
-  if (error instanceof Error)
-    return { kind: fallbackKind, message: error.message };
+  if (error instanceof Error) return { kind: fallbackKind, message: error.message };
   return { kind: fallbackKind, message: String(error) };
 }

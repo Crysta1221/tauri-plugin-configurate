@@ -2,6 +2,9 @@ import {
   KEYRING_BRAND_KEY,
   KEYRING_RUNTIME_TYPE_KEY,
   OPTIONAL_BRAND_KEY,
+  JSON_BRAND_KEY,
+  RECORD_BRAND_KEY,
+  ONE_OF_BRAND_KEY,
   collectKeyringIds,
   isPrimitiveConstructor,
   validateSchemaArrays,
@@ -37,8 +40,16 @@ export interface KeyringFieldOptions<Id extends string> {
  * It is used as part of the OS keyring user string (`{account}/{id}`),
  * so `/` would create an ambiguous path-like structure.
  */
+export function keyring<C extends PrimitiveConstructor, const Id extends string>(
+  typeCtor: C,
+  opts: KeyringFieldOptions<Id>,
+): KeyringField<InferPrimitive<C>, Id>;
+export function keyring<T, const Id extends string>(
+  typeCtor: (abstract new (...args: never[]) => T) | ((...args: never[]) => T),
+  opts: KeyringFieldOptions<Id>,
+): KeyringField<T, Id>;
 export function keyring<T, Id extends string>(
-  typeCtor: abstract new (...args: never[]) => T | ((...args: never[]) => T),
+  typeCtor: (abstract new (...args: never[]) => T) | ((...args: never[]) => T),
   opts: KeyringFieldOptions<Id>,
 ): KeyringField<T, Id> {
   if (!opts.id) {
@@ -49,10 +60,7 @@ export function keyring<T, Id extends string>(
       `keyring() id '${opts.id}' must not contain '/' (it is used as a separator in the keyring user string).`,
     );
   }
-  const field = { _type: undefined as unknown as T, _id: opts.id } as Record<
-    string,
-    unknown
-  >;
+  const field = { _type: undefined as unknown as T, _id: opts.id } as Record<string, unknown>;
   field[KEYRING_BRAND_KEY] = true;
   if (isPrimitiveConstructor(typeCtor)) {
     field[KEYRING_RUNTIME_TYPE_KEY] = typeCtor;
@@ -72,7 +80,8 @@ type OptionalInner =
   | PrimitiveConstructor
   | KeyringField<unknown, string>
   | SchemaObject
-  | SchemaArray;
+  | SchemaArray
+  | SchemaMarker;
 
 /**
  * Marker type produced by `optional()`.
@@ -104,13 +113,105 @@ export function optional<V extends OptionalInner>(schema: V): OptionalField<V> {
 }
 
 // ---------------------------------------------------------------------------
+// Value markers: json(), record(), oneOf()
+// ---------------------------------------------------------------------------
+
+/** Phantom symbols used only in the type system – never appear at runtime. */
+declare const _jsonBrandTag: unique symbol;
+declare const _recordBrandTag: unique symbol;
+declare const _oneOfBrandTag: unique symbol;
+
+/** Marker type produced by `json()`. `T` – the inferred value type. */
+export type JsonField<T = unknown> = {
+  readonly [_jsonBrandTag]: true;
+  readonly _type: T;
+};
+
+/** Schema values a `record()` can hold. Keyring fields are not supported. */
+type RecordInner =
+  | PrimitiveConstructor
+  | SchemaObject
+  | SchemaArray
+  | JsonField<unknown>
+  | RecordField<RecordInner>
+  | OneOfField<string>;
+
+/** Marker type produced by `record()`. `V` – the schema of every value. */
+export interface RecordField<V extends RecordInner> {
+  readonly [_recordBrandTag]: true;
+  readonly _schema: V;
+}
+
+/** Marker type produced by `oneOf()`. `T` – the allowed string literals. */
+export type OneOfField<T extends string> = {
+  readonly [_oneOfBrandTag]: true;
+  readonly _values: readonly T[];
+};
+
+/** Any value marker; checked before plain objects in every type-level walk. */
+type SchemaMarker = JsonField<unknown> | RecordField<RecordInner> | OneOfField<string>;
+
+/**
+ * Marks a field as an opaque JSON value (for shapes the schema cannot
+ * express, such as discriminated unions).
+ *
+ * Validation only checks that the value is present and JSON-safe: `null`,
+ * booleans, strings, finite numbers, arrays and plain objects of those.
+ * The inferred type is `unknown`, or `T` when given; `T` is not checked at
+ * runtime. Keyring fields cannot live inside it.
+ *
+ * @example
+ * type Shape = { kind: "circle"; r: number } | { kind: "rect"; w: number; h: number };
+ * const schema = defineConfig({ shape: json<Shape>(), extra: optional(json()) });
+ */
+export function json<T = unknown>(): JsonField<T> {
+  const field = {} as Record<string, unknown>;
+  field[JSON_BRAND_KEY] = true;
+  return field as unknown as JsonField<T>;
+}
+
+/**
+ * Marks a field as a string-keyed map whose values all follow `schema`
+ * (inferred as `Record<string, ...>`).
+ *
+ * Keyring fields are not supported anywhere inside a record; `defineConfig`
+ * rejects them.
+ *
+ * @example
+ * const schema = defineConfig({ shortcuts: record(String), panes: record({ width: Number }) });
+ */
+export function record<V extends RecordInner>(schema: V): RecordField<V> {
+  const field = { _schema: schema } as Record<string, unknown>;
+  field[RECORD_BRAND_KEY] = true;
+  return field as unknown as RecordField<V>;
+}
+
+/**
+ * Marks a field as one of the given strings (inferred as their literal union).
+ * Validation rejects any other value.
+ *
+ * @example
+ * const schema = defineConfig({ theme: oneOf("light", "dark", "system") });
+ */
+export function oneOf<T extends string>(...values: [T, ...T[]]): OneOfField<T> {
+  if (values.length === 0) {
+    throw new Error("oneOf() requires at least one value.");
+  }
+  for (const value of values) {
+    if (typeof value !== "string") {
+      throw new Error("oneOf() values must be strings.");
+    }
+  }
+  const field = { _values: [...values] } as Record<string, unknown>;
+  field[ONE_OF_BRAND_KEY] = true;
+  return field as unknown as OneOfField<T>;
+}
+
+// ---------------------------------------------------------------------------
 // Schema definition
 // ---------------------------------------------------------------------------
 
-type PrimitiveConstructor =
-  | StringConstructor
-  | NumberConstructor
-  | BooleanConstructor;
+type PrimitiveConstructor = StringConstructor | NumberConstructor | BooleanConstructor;
 
 type InferPrimitive<C> = C extends StringConstructor
   ? string
@@ -123,7 +224,8 @@ type InferPrimitive<C> = C extends StringConstructor
 type SchemaArrayElement =
   | PrimitiveConstructor
   | KeyringField<unknown, string>
-  | SchemaObject;
+  | SchemaObject
+  | SchemaMarker;
 
 export type SchemaArray = readonly [SchemaArrayElement];
 
@@ -132,7 +234,8 @@ export type SchemaValue =
   | KeyringField<unknown, string>
   | SchemaObject
   | SchemaArray
-  | OptionalField<OptionalInner>;
+  | OptionalField<OptionalInner>
+  | SchemaMarker;
 
 export type SchemaObject = { [key: string]: SchemaValue };
 
@@ -140,106 +243,83 @@ export type SchemaObject = { [key: string]: SchemaValue };
 // Type-level keyring id collection (used for duplicate detection)
 // ---------------------------------------------------------------------------
 
-export type CollectKeyringIds<S extends SchemaObject> = {
-  [K in keyof S]: S[K] extends KeyringField<unknown, infer Id>
+type CollectKeyringIdsFromValue<V> = V extends SchemaMarker
+  ? never
+  : V extends KeyringField<unknown, infer Id>
     ? Id
-    : S[K] extends OptionalField<infer V>
-      ? V extends KeyringField<unknown, infer Id>
-        ? Id
+    : V extends OptionalField<infer Inner>
+      ? CollectKeyringIdsFromValue<Inner>
+      : V extends SchemaArray
+        ? CollectKeyringIdsFromValue<V[0]>
         : V extends SchemaObject
           ? CollectKeyringIds<V>
-          : never
-      : S[K] extends SchemaObject
-        ? CollectKeyringIds<S[K]>
-        : never;
+          : never;
+
+export type CollectKeyringIds<S extends SchemaObject> = {
+  [K in keyof S]: CollectKeyringIdsFromValue<S[K]>;
 }[keyof S];
 
-type IsDuplicate<T extends string, All extends string> =
-  T extends Exclude<All, T> ? true : false;
+type IsDuplicate<T extends string, All extends string> = T extends Exclude<All, T> ? true : false;
 
-export type HasDuplicateKeyringIds<S extends SchemaObject> = true extends {
-  [Id in CollectKeyringIds<S>]: IsDuplicate<Id, CollectKeyringIds<S>>;
-}[CollectKeyringIds<S>]
-  ? true
-  : false;
+export type HasDuplicateKeyringIds<S extends SchemaObject> =
+  CollectKeyringIds<S> extends infer Ids extends string
+    ? true extends {
+        [Id in Ids]: IsDuplicate<Id, Ids>;
+      }[Ids]
+      ? true
+      : false
+    : false;
 
 // ---------------------------------------------------------------------------
 // Type inference (locked = keyring fields replaced with null)
 // ---------------------------------------------------------------------------
 
-/** Infers the locked (keyring fields = null) TypeScript type from a SchemaObject. */
-export type InferLocked<S extends SchemaObject> = {
-  [K in keyof S]: S[K] extends OptionalField<infer V>
-    ?
-        | (V extends KeyringField<unknown, string>
+/** Keys of `S` whose schema is wrapped in `optional()`. */
+type OptionalKeys<S extends SchemaObject> = {
+  [K in keyof S]: S[K] extends OptionalField<OptionalInner> ? K : never;
+}[keyof S];
+
+/** Re-maps an intersection into a single object type (keeps `?` modifiers). */
+type Flatten<T> = { [K in keyof T]: T[K] };
+
+/**
+ * Builds an object type from a schema: keys wrapped in `optional()` become
+ * `key?: T | undefined`, so object literals may omit them; all others stay required.
+ */
+type InferObject<S extends SchemaObject, Locked extends boolean> = Flatten<
+  {
+    [K in Exclude<keyof S, OptionalKeys<S>>]: InferValue<S[K], Locked>;
+  } & {
+    [K in OptionalKeys<S>]?:
+      | (S[K] extends OptionalField<infer V> ? InferValue<V, Locked> : never)
+      | undefined;
+  }
+>;
+
+type InferValue<V, Locked extends boolean> =
+  V extends JsonField<infer T>
+    ? T
+    : V extends OneOfField<infer T>
+      ? T
+      : V extends RecordField<infer R>
+        ? { [key: string]: InferValue<R, Locked> }
+        : V extends KeyringField<infer T, string>
+          ? Locked extends true
             ? null
-            : V extends SchemaArray
-              ? V[0] extends KeyringField<unknown, string>
-                ? null[]
-                : V[0] extends PrimitiveConstructor
-                  ? InferPrimitive<V[0]>[]
-                  : V[0] extends SchemaObject
-                    ? InferLocked<V[0]>[]
-                    : never
-              : V extends SchemaObject
-                ? InferLocked<V>
-                : V extends PrimitiveConstructor
-                  ? InferPrimitive<V>
-                  : never)
-        | undefined
-    : S[K] extends KeyringField<unknown, string>
-      ? null
-      : S[K] extends SchemaArray
-        ? S[K][0] extends KeyringField<unknown, string>
-          ? null[]
-          : S[K][0] extends PrimitiveConstructor
-            ? InferPrimitive<S[K][0]>[]
-            : S[K][0] extends SchemaObject
-              ? InferLocked<S[K][0]>[]
-              : never
-        : S[K] extends SchemaObject
-          ? InferLocked<S[K]>
-          : S[K] extends PrimitiveConstructor
-            ? InferPrimitive<S[K]>
-            : never;
-};
+            : T
+          : V extends SchemaArray
+            ? InferValue<V[0], Locked>[]
+            : V extends SchemaObject
+              ? InferObject<V, Locked>
+              : V extends PrimitiveConstructor
+                ? InferPrimitive<V>
+                : never;
+
+/** Infers the locked (keyring fields = null) TypeScript type from a SchemaObject. */
+export type InferLocked<S extends SchemaObject> = InferObject<S, true>;
 
 /** Infers the unlocked (keyring fields = actual type) TypeScript type from a SchemaObject. */
-export type InferUnlocked<S extends SchemaObject> = {
-  [K in keyof S]: S[K] extends OptionalField<infer V>
-    ?
-        | (V extends KeyringField<infer T, string>
-            ? T
-            : V extends SchemaArray
-              ? V[0] extends KeyringField<infer T, string>
-                ? T[]
-                : V[0] extends PrimitiveConstructor
-                  ? InferPrimitive<V[0]>[]
-                  : V[0] extends SchemaObject
-                    ? InferUnlocked<V[0]>[]
-                    : never
-              : V extends SchemaObject
-                ? InferUnlocked<V>
-                : V extends PrimitiveConstructor
-                  ? InferPrimitive<V>
-                  : never)
-        | undefined
-    : S[K] extends KeyringField<infer T, string>
-      ? T
-      : S[K] extends SchemaArray
-        ? S[K][0] extends KeyringField<infer T, string>
-          ? T[]
-          : S[K][0] extends PrimitiveConstructor
-            ? InferPrimitive<S[K][0]>[]
-            : S[K][0] extends SchemaObject
-              ? InferUnlocked<S[K][0]>[]
-              : never
-        : S[K] extends SchemaObject
-          ? InferUnlocked<S[K]>
-          : S[K] extends PrimitiveConstructor
-            ? InferPrimitive<S[K]>
-            : never;
-};
+export type InferUnlocked<S extends SchemaObject> = InferObject<S, false>;
 
 // ---------------------------------------------------------------------------
 // defineConfig helper
@@ -268,9 +348,7 @@ export function defineConfig<S extends SchemaObject>(
 // ---------------------------------------------------------------------------
 
 /** A single migration step that transforms config data from one version to the next. */
-export interface MigrationStep<
-  TData extends Record<string, unknown> = Record<string, unknown>,
-> {
+export interface MigrationStep<TData extends Record<string, unknown> = Record<string, unknown>> {
   /** The version this migration upgrades FROM. */
   version: number;
   /** Transform function. Receives data at `version`, must return data at `version+1`. */

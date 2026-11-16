@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen as tauriListen } from "@tauri-apps/api/event";
-export { BaseDirectory } from "@tauri-apps/api/path";
-import type { BaseDirectory } from "@tauri-apps/api/path";
+import { BaseDirectory } from "@tauri-apps/api/path";
 import {
   CONFIGURATE_VERSION_KEY,
   isPlainObject,
@@ -29,6 +28,10 @@ import type {
 import { isProvider } from "./provider";
 import type { ConfigurateProvider } from "./provider";
 
+// Import then re-export instead of `export { BaseDirectory } from`: next to a type-only import of the same name,
+// the bundled declarations marked `BaseDirectory` as a type, which broke `BaseDirectory.AppConfig` for consumers.
+export { BaseDirectory };
+
 // ---------------------------------------------------------------------------
 // Keyring options
 // ---------------------------------------------------------------------------
@@ -46,14 +49,10 @@ function validateKeyringOptions(opts: KeyringOptions): void {
     throw new Error('Configurate: keyring "account" must not be empty.');
   }
   if (/\p{Cc}/u.test(opts.service)) {
-    throw new Error(
-      'Configurate: keyring "service" must not contain control characters.',
-    );
+    throw new Error('Configurate: keyring "service" must not contain control characters.');
   }
   if (/\p{Cc}/u.test(opts.account)) {
-    throw new Error(
-      'Configurate: keyring "account" must not contain control characters.',
-    );
+    throw new Error('Configurate: keyring "account" must not contain control characters.');
   }
 }
 
@@ -135,7 +134,11 @@ function containsForbiddenPathChars(component: string): boolean {
 }
 
 function isDotOnlySegment(segment: string): boolean {
-  return segment.length > 0 && [...segment].every((c) => c === ".");
+  if (segment.length === 0) return false;
+  for (let i = 0; i < segment.length; i++) {
+    if (segment[i] !== ".") return false;
+  }
+  return true;
 }
 
 /** Mirrors `validate_path_component` in `src/commands.rs`. */
@@ -149,14 +152,10 @@ function validatePathComponent(component: string, field: string): void {
     );
   }
   if (isDotOnlySegment(component)) {
-    throw new Error(
-      `Configurate: ${field} must not contain dot-only segments (., .., ...).`,
-    );
+    throw new Error(`Configurate: ${field} must not contain dot-only segments (., .., ...).`);
   }
   if (component.endsWith(" ") || component.endsWith(".")) {
-    throw new Error(
-      `Configurate: ${field} must not contain segments ending with a space or dot.`,
-    );
+    throw new Error(`Configurate: ${field} must not contain segments ending with a space or dot.`);
   }
 }
 
@@ -169,16 +168,15 @@ function validatePathSegments(value: string, field: string): void {
   }
 }
 
-function normalizeConfigurateInit<S extends SchemaObject>(
-  input: ConfigurateInit<S>,
-): NormalizedConfigurateInit<S> {
-  const schema = input.schema;
+/** Directory-level location shared by the constructor and `Configurate.list()`. */
+export interface ConfigurateListOptions {
+  baseDir: BaseDirectory;
+  provider: ConfigurateProvider;
+  options?: ConfiguratePathOptions;
+}
 
-  const fileName = input.fileName;
-  if (!fileName) {
-    throw new Error('Configurate: "fileName" must be provided.');
-  }
-
+/** Validates `baseDir` / `provider` / path options (mirrors the Rust path rules). */
+function normalizeLocation(input: ConfigurateListOptions): ConfigurateListOptions {
   const baseDir = input.baseDir;
   if (baseDir === undefined) {
     throw new Error('Configurate: "baseDir" must be provided.');
@@ -191,8 +189,6 @@ function normalizeConfigurateInit<S extends SchemaObject>(
     );
   }
 
-  validatePathComponent(fileName, '"fileName"');
-
   if (input.options?.dirName !== undefined) {
     validatePathSegments(input.options.dirName, '"options.dirName"');
   }
@@ -201,14 +197,55 @@ function normalizeConfigurateInit<S extends SchemaObject>(
   }
 
   return {
+    baseDir,
+    provider,
+    options: input.options?.dirName || input.options?.currentPath ? input.options : undefined,
+  };
+}
+
+/** Serializes the provider for IPC payloads. */
+function serializeProvider(
+  p: ConfigurateProvider,
+  includeEncryptionKey: boolean,
+): Record<string, unknown> {
+  if (p.kind === "binary") {
+    const out: Record<string, unknown> = { kind: "binary", kdf: p.kdf };
+    if (includeEncryptionKey && p.encryptionKey !== undefined) {
+      out.encryptionKey = p.encryptionKey;
+    }
+    return out;
+  }
+  return { kind: p.kind };
+}
+
+/** Serializes the path options for IPC payloads. */
+function serializePathOptions(
+  options: ConfiguratePathOptions | undefined,
+): Record<string, unknown> | undefined {
+  if (options === undefined) return undefined;
+  return { dirName: options.dirName, currentPath: options.currentPath };
+}
+
+function normalizeConfigurateInit<S extends SchemaObject>(
+  input: ConfigurateInit<S>,
+): NormalizedConfigurateInit<S> {
+  const schema = input.schema;
+
+  const fileName = input.fileName;
+  if (!fileName) {
+    throw new Error('Configurate: "fileName" must be provided.');
+  }
+
+  const { baseDir, provider, options } = normalizeLocation(input);
+
+  validatePathComponent(fileName, '"fileName"');
+
+  return {
     schema,
     fileName,
     baseDir,
     provider,
-    options:
-      input.options?.dirName || input.options?.currentPath
-        ? input.options
-        : undefined,
+    options,
     validation: resolveValidationOptions(input.validation),
     defaults: input.defaults,
     version: input.version,
@@ -217,12 +254,7 @@ function normalizeConfigurateInit<S extends SchemaObject>(
   };
 }
 
-function buildChangeTargetId(
-  init: Pick<
-    NormalizedConfigurateInit<SchemaObject>,
-    "fileName" | "baseDir" | "provider" | "options"
-  >,
-): string {
+function buildChangeTargetId(init: ConfigurateListOptions & { fileName: string }): string {
   return [
     JSON.stringify(init.baseDir),
     init.provider.kind,
@@ -236,12 +268,127 @@ function buildChangeTargetId(
 // Result types
 // ---------------------------------------------------------------------------
 
+/**
+ * Error kinds a caller can see.
+ *
+ * - From Rust (`src/error.rs`): `io`, `storage`, `keyring`, `dotpath`,
+ *   `invalid_payload`, `json`, `plugin_invoke` (mobile only), and `unknown`
+ *   when a batch error cannot be serialized.
+ * - From the guest in batch results: `post_load_failed`, `schema_validation`,
+ *   `unlock_failed`, `payload_build_failed`, `batch_call_failed`, `unknown`.
+ *
+ * Other strings are accepted so new kinds are not a breaking change.
+ */
+export type ConfigurateErrorKind =
+  | "io"
+  | "storage"
+  | "keyring"
+  | "dotpath"
+  | "invalid_payload"
+  | "json"
+  | "plugin_invoke"
+  | "post_load_failed"
+  | "schema_validation"
+  | "unlock_failed"
+  | "payload_build_failed"
+  | "batch_call_failed"
+  | "unknown"
+  | (string & {});
+
+/** `io_kind` values sent with `kind: "io"` errors (from `std::io::ErrorKind`). */
+export type ConfigurateIoErrorKind =
+  | "not_found"
+  | "permission_denied"
+  | "already_exists"
+  | "would_block"
+  | "invalid_input"
+  | "timed_out"
+  | "interrupted"
+  | "out_of_memory"
+  | "other"
+  | (string & {});
+
+/**
+ * Error object rejected by plugin commands and stored in batch results.
+ *
+ * Rust command errors reject with this plain object (not an `Error`
+ * instance). Guest-side failures of single calls (schema validation, payload
+ * checks) are thrown as `Error` instances instead; batch results convert them
+ * to this shape.
+ */
+export interface ConfigurateError {
+  kind: ConfigurateErrorKind;
+  message: string;
+  /** Present only when `kind` is `"io"`. */
+  io_kind?: ConfigurateIoErrorKind;
+}
+
+/**
+ * Returns true when `error` is the plugin's "file does not exist" error
+ * (`kind: "io"`, `io_kind: "not_found"`), as rejected by `load()` on a
+ * missing file or reported in a `loadAll()` result. A file that exists but
+ * cannot be parsed or decrypted reports another kind (`storage`, `json`, ...).
+ */
+export function isNotFoundError(
+  error: unknown,
+): error is ConfigurateError & { kind: "io"; io_kind: "not_found" } {
+  if (typeof error !== "object" || error === null) return false;
+  const e = error as Record<string, unknown>;
+  return e.kind === "io" && e.io_kind === "not_found" && typeof e.message === "string";
+}
+
 export type BatchRunEntryResult =
   | { ok: true; data: unknown }
-  | { ok: false; error: { kind: string; message: string } };
+  | { ok: false; error: ConfigurateError };
 
 export interface BatchRunResult {
   results: Record<string, BatchRunEntryResult>;
+}
+
+/** Mirrors `MAX_BATCH_ENTRIES` in `src/commands.rs`: entries per `*_all` IPC call. */
+const MAX_BATCH_ENTRIES = 128;
+
+type BatchPayloadEntry = { id: string; payload: Record<string, unknown> };
+
+/**
+ * Runs a `*_all` command over `entries`, at most `MAX_BATCH_ENTRIES` per IPC
+ * call. Calls run one after another (never in parallel) so the per-call load
+ * bound in Rust still holds for the whole list.
+ *
+ * A list that fits in one call behaves as before: a failed call rejects.
+ * When the list is split, a failed call does not discard the other calls'
+ * results; each id of that call is reported as failed with the call's error
+ * (`batch_call_failed` when the rejection is not a `ConfigurateError`).
+ */
+// Ids are caller-chosen strings, so an id such as "__proto__" must land as an own key, not hit
+// Object.prototype's setter when results are assigned or merged.
+function emptyResults(): Record<string, BatchRunEntryResult> {
+  return Object.create(null) as Record<string, BatchRunEntryResult>;
+}
+
+async function invokeBatch(
+  command: string,
+  entries: BatchPayloadEntry[],
+  split = entries.length > MAX_BATCH_ENTRIES,
+): Promise<Record<string, BatchRunEntryResult>> {
+  if (!split) {
+    const result = await invoke<BatchRunResult>(command, { payload: { entries } });
+    return result.results;
+  }
+  const results = emptyResults();
+  for (let start = 0; start < entries.length; start += MAX_BATCH_ENTRIES) {
+    const chunk = entries.slice(start, start + MAX_BATCH_ENTRIES);
+    try {
+      const result = await invoke<BatchRunResult>(command, { payload: { entries: chunk } });
+      Object.assign(results, result.results);
+    } catch (error) {
+      const failure = toBatchError(error, "batch_call_failed");
+      for (const entry of chunk) {
+        results[entry.id] = { ok: false, error: { ...failure } };
+      }
+    }
+  }
+  return results;
 }
 
 interface BatchConfigLike {
@@ -258,10 +405,7 @@ interface BatchConfigLike {
   ): Promise<void>;
   _postProcessLoadedData(data: unknown): Promise<unknown>;
   _validateLoadedData(data: unknown): void;
-  _unlockLoadedData(
-    data: unknown,
-    keyringOpts: KeyringOptions,
-  ): Promise<unknown>;
+  _unlockLoadedData(data: unknown, keyringOpts: KeyringOptions): Promise<unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,10 +425,7 @@ export class LockedConfig<S extends SchemaObject> {
 
   async unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
     validateKeyringOptions(opts);
-    return this._configurate._unlockFromData(
-      this.data as Record<string, unknown>,
-      opts,
-    );
+    return this._configurate._unlockFromData(this.data as Record<string, unknown>, opts);
   }
 }
 
@@ -307,9 +448,7 @@ export class UnlockedConfig<S extends SchemaObject> {
 
   get data(): InferUnlocked<S> {
     if (this._data === null) {
-      throw new Error(
-        "Cannot access data after lock() has been called. Load or unlock again.",
-      );
+      throw new Error("Cannot access data after lock() has been called. Load or unlock again.");
     }
     return this._data;
   }
@@ -344,11 +483,7 @@ export class LazyConfigEntry<S extends SchemaObject> {
   }
 
   run(): Promise<LockedConfig<S>> {
-    return this._configurate._executeLocked(
-      this._op,
-      this._data,
-      this._keyringOpts,
-    );
+    return this._configurate._executeLocked(this._op, this._data, this._keyringOpts);
   }
 
   unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
@@ -395,11 +530,7 @@ export class LazyPatchEntry<S extends SchemaObject> {
 
   unlock(opts: KeyringOptions): Promise<UnlockedConfig<S>> {
     validateKeyringOptions(opts);
-    return this._configurate._executePatchUnlock(
-      this._data,
-      opts,
-      this._createIfMissing,
-    );
+    return this._configurate._executePatchUnlock(this._data, opts, this._createIfMissing);
   }
 }
 
@@ -469,7 +600,8 @@ class LoadAllBuilder {
     for (const entry of entries) {
       assertNonEmptyId(this._idSet, entry.id);
     }
-    this._entries = entries;
+    // Copy the entries so the ids validated here are the ids run() sends.
+    this._entries = entries.map((entry) => ({ ...entry }));
   }
 
   unlock(id: string, opts: KeyringOptions): this {
@@ -488,19 +620,16 @@ class LoadAllBuilder {
   }
 
   async run(): Promise<BatchRunResult> {
-    const payload = {
-      entries: this._entries.map((entry) => {
-        return {
-          id: entry.id,
-          payload: entry.config._buildPayload("load", undefined, null, false),
-        };
-      }),
-    };
+    const entries = this._entries.map((entry) => {
+      return {
+        id: entry.id,
+        payload: entry.config._buildPayload("load", undefined, null, false),
+      };
+    });
 
-    const batchResult = await invoke<BatchRunResult>(
-      "plugin:configurate|load_all",
-      { payload },
-    );
+    const batchResult: BatchRunResult = {
+      results: await invokeBatch("plugin:configurate|load_all", entries),
+    };
 
     await Promise.all(
       this._entries.map(async (entry) => {
@@ -548,10 +677,7 @@ class LoadAllBuilder {
         }
 
         try {
-          const unlockedData = await entry.config._unlockLoadedData(
-            result.data,
-            unlockOpts,
-          );
+          const unlockedData = await entry.config._unlockLoadedData(result.data, unlockOpts);
           batchResult.results[entry.id] = { ok: true, data: unlockedData };
         } catch (error) {
           batchResult.results[entry.id] = {
@@ -580,7 +706,8 @@ class SaveAllBuilder {
     for (const entry of entries) {
       assertNonEmptyId(this._idSet, entry.id);
     }
-    this._entries = entries;
+    // Copy the entries so the ids validated here are the ids run() sends.
+    this._entries = entries.map((entry) => ({ ...entry }));
   }
 
   lock(id: string, opts: KeyringOptions): this {
@@ -603,22 +730,13 @@ class SaveAllBuilder {
       id: string;
       payload: Record<string, unknown>;
     }> = [];
-    const preflightResults: Record<string, BatchRunEntryResult> = {};
+    const preflightResults = emptyResults();
 
     for (const entry of this._entries) {
       const lockOpts = this._lockById.get(entry.id) ?? this._lockAll;
       try {
-        const entryPayload = entry.config._buildPayload(
-          "save",
-          entry.data as InferUnlocked<SchemaObject>,
-          lockOpts,
-          false,
-          false,
-        );
-        await entry.config._attachFullReplaceKeyringDeletes(
-          entryPayload,
-          lockOpts,
-        );
+        const entryPayload = entry.config._buildPayload("save", entry.data, lockOpts, false, false);
+        await entry.config._attachFullReplaceKeyringDeletes(entryPayload, lockOpts);
         payloadEntries.push({
           id: entry.id,
           payload: entryPayload,
@@ -635,16 +753,13 @@ class SaveAllBuilder {
       return { results: preflightResults };
     }
 
-    const payload = { entries: payloadEntries };
-    const backendResult = await invoke<BatchRunResult>(
+    const backendResults = await invokeBatch(
       "plugin:configurate|save_all",
-      { payload },
+      payloadEntries,
+      this._entries.length > MAX_BATCH_ENTRIES,
     );
     return {
-      results: {
-        ...backendResult.results,
-        ...preflightResults,
-      },
+      results: Object.assign(emptyResults(), backendResults, preflightResults),
     };
   }
 }
@@ -674,7 +789,8 @@ class PatchAllBuilder {
     for (const entry of entries) {
       assertNonEmptyId(this._idSet, entry.id);
     }
-    this._entries = entries;
+    // Copy the entries so the ids validated here are the ids run() sends.
+    this._entries = entries.map((entry) => ({ ...entry }));
   }
 
   lock(id: string, opts: KeyringOptions): this {
@@ -697,20 +813,14 @@ class PatchAllBuilder {
       id: string;
       payload: Record<string, unknown>;
     }> = [];
-    const preflightResults: Record<string, BatchRunEntryResult> = {};
+    const preflightResults = emptyResults();
 
     for (const entry of this._entries) {
       const lockOpts = this._lockById.get(entry.id) ?? this._lockAll;
       try {
         payloadEntries.push({
           id: entry.id,
-          payload: entry.config._buildPayload(
-            "patch",
-            entry.data as Partial<InferUnlocked<SchemaObject>>,
-            lockOpts,
-            false,
-            false,
-          ),
+          payload: entry.config._buildPayload("patch", entry.data, lockOpts, false, false),
         });
       } catch (error) {
         preflightResults[entry.id] = {
@@ -724,16 +834,13 @@ class PatchAllBuilder {
       return { results: preflightResults };
     }
 
-    const payload = { entries: payloadEntries };
-    const backendResult = await invoke<BatchRunResult>(
+    const backendResults = await invokeBatch(
       "plugin:configurate|patch_all",
-      { payload },
+      payloadEntries,
+      this._entries.length > MAX_BATCH_ENTRIES,
     );
     return {
-      results: {
-        ...backendResult.results,
-        ...preflightResults,
-      },
+      results: Object.assign(emptyResults(), backendResults, preflightResults),
     };
   }
 }
@@ -766,25 +873,10 @@ export class Configurate<S extends SchemaObject> {
     this._schema = normalized.schema;
     validateSchemaArrays(this._schema);
     this._opts = normalized;
-    this._changeTargetId = buildChangeTargetId(
-      normalized as NormalizedConfigurateInit<SchemaObject>,
-    );
+    this._changeTargetId = buildChangeTargetId(normalized);
     this._keyringPaths = collectStaticKeyringPaths(this._schema);
     this._hasKeyringFields = hasAnyKeyring(this._schema);
     this._hasArrayKeyring = hasArrayKeyring(this._schema);
-  }
-
-  /** Serializes the provider for IPC payloads. */
-  private _serializeProvider(includeEncryptionKey: boolean): Record<string, unknown> {
-    const p = this._opts.provider;
-    if (p.kind === "binary") {
-      const out: Record<string, unknown> = { kind: "binary", kdf: p.kdf };
-      if (includeEncryptionKey && p.encryptionKey !== undefined) {
-        out.encryptionKey = p.encryptionKey;
-      }
-      return out;
-    }
-    return { kind: p.kind };
   }
 
   /** Builds common base fields shared by all payloads. */
@@ -793,13 +885,11 @@ export class Configurate<S extends SchemaObject> {
     const base: Record<string, unknown> = {
       fileName: this._opts.fileName,
       baseDir: this._opts.baseDir as number,
-      provider: this._serializeProvider(includeEncryptionKey),
+      provider: serializeProvider(this._opts.provider, includeEncryptionKey),
     };
-    if (this._opts.options !== undefined) {
-      base.options = {
-        dirName: this._opts.options.dirName,
-        currentPath: this._opts.options.currentPath,
-      };
+    const pathOptions = serializePathOptions(this._opts.options);
+    if (pathOptions !== undefined) {
+      base.options = pathOptions;
     }
     if (this._opts.backup) {
       base.backup = true;
@@ -817,6 +907,35 @@ export class Configurate<S extends SchemaObject> {
 
   static patchAll(entries: PatchAllEntry[]): PatchAllRunner {
     return new PatchAllBuilder(entries);
+  }
+
+  /**
+   * Lists config file names in a directory without a `Configurate` instance
+   * (no schema or `fileName` needed).
+   *
+   * Uses the same path rules as the constructor and the same `list_configs`
+   * command (`configurate:allow-list-configs`) as `config.list()`.
+   *
+   * @example
+   * const files = await Configurate.list({
+   *   baseDir: BaseDirectory.AppData,
+   *   provider: JsonProvider(),
+   *   options: { dirName: "sessions" },
+   * });
+   */
+  static async list(opts: ConfigurateListOptions): Promise<string[]> {
+    const { baseDir, provider, options } = normalizeLocation(opts);
+    const payload: Record<string, unknown> = {
+      baseDir: baseDir as number,
+      provider: serializeProvider(provider, false),
+      withUnlock: false,
+      returnData: false,
+    };
+    const pathOptions = serializePathOptions(options);
+    if (pathOptions !== undefined) {
+      payload.options = pathOptions;
+    }
+    return invoke<string[]>("plugin:configurate|list_configs", { payload });
   }
 
   create(data: InferUnlocked<S>): LazyConfigEntry<S> {
@@ -839,8 +958,9 @@ export class Configurate<S extends SchemaObject> {
   /**
    * Lists config file names in the resolved root directory.
    *
-   * For file-based providers, scans for files matching the provider extension.
-   * For SQLite, returns all `config_key` values in the table.
+   * Scans for files matching the provider extension (any file for the binary
+   * provider), excluding backups and temp files. This instance's `fileName`
+   * is ignored; use the static `Configurate.list()` when no instance exists.
    */
   async list(): Promise<string[]> {
     const payload = this._buildLocationPayload();
@@ -851,8 +971,8 @@ export class Configurate<S extends SchemaObject> {
    * Resets the config by deleting existing data and re-creating it with
    * the provided default data.
    */
-  reset(data: InferUnlocked<S>): LazyConfigEntry<S> {
-    return new LazyResetEntry(this, data) as unknown as LazyConfigEntry<S>;
+  reset(data: InferUnlocked<S>): LazyResetEntry<S> {
+    return new LazyResetEntry(this, data);
   }
 
   /**
@@ -861,16 +981,11 @@ export class Configurate<S extends SchemaObject> {
    * @param format - Target format: "json", "yml", or "toml"
    * @returns The serialized config string
    */
-  async exportAs(
-    format: "json" | "yml" | "toml",
-    opts?: KeyringOptions | null,
-  ): Promise<string> {
+  async exportAs(format: "json" | "yml" | "toml", opts?: KeyringOptions | null): Promise<string> {
     if (opts) {
       validateKeyringOptions(opts);
     }
-    const loaded = opts
-      ? await this.load().unlock(opts)
-      : await this.load().run();
+    const loaded = opts ? await this.load().unlock(opts) : await this.load().run();
     const payload = {
       source: {
         ...this._buildBasePayload({ includeEncryptionKey: false }),
@@ -906,13 +1021,7 @@ export class Configurate<S extends SchemaObject> {
         parseOnly: true,
       },
     });
-    const targetPayload = this._buildPayload(
-      "save",
-      parsed,
-      opts ?? null,
-      false,
-      false,
-    );
+    const targetPayload = this._buildPayload("save", parsed, opts ?? null, false, false);
     await this._attachFullReplaceKeyringDeletes(targetPayload, opts ?? null);
     await invoke("plugin:configurate|import_config", {
       payload: {
@@ -928,11 +1037,7 @@ export class Configurate<S extends SchemaObject> {
    * @throws Error if validation fails
    */
   validate(data: InferUnlocked<S>): void {
-    assertDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   /**
@@ -942,11 +1047,7 @@ export class Configurate<S extends SchemaObject> {
    * @throws Error if validation fails
    */
   validatePartial(data: Partial<InferUnlocked<S>>): void {
-    assertPartialDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertPartialDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   /**
@@ -974,9 +1075,7 @@ export class Configurate<S extends SchemaObject> {
    * Registers a callback that fires whenever this config file is changed
    * (create, save, patch, delete). Returns an unlisten function.
    */
-  async onChange(
-    callback: (event: ConfigChangeEvent) => void,
-  ): Promise<() => void> {
+  async onChange(callback: (event: ConfigChangeEvent) => void): Promise<() => void> {
     return tauriListen<ConfigChangeEvent>("configurate://change", (event) => {
       if (event.payload.targetId === this._changeTargetId) {
         callback(event.payload);
@@ -1005,22 +1104,17 @@ export class Configurate<S extends SchemaObject> {
    * Returns an async stop function that unregisters the listener and
    * calls `unwatch_file`.
    */
-  async watchExternal(
-    callback: (event: ConfigChangeEvent) => void,
-  ): Promise<() => Promise<void>> {
+  async watchExternal(callback: (event: ConfigChangeEvent) => void): Promise<() => Promise<void>> {
     const payload = this._buildLocationPayload();
     // Register JS listener first to avoid losing events.
-    const unlisten = await tauriListen<ConfigChangeEvent>(
-      "configurate://change",
-      (event) => {
-        if (
-          event.payload.targetId === this._changeTargetId &&
-          event.payload.operation === "external_change"
-        ) {
-          callback(event.payload);
-        }
-      },
-    );
+    const unlisten = await tauriListen<ConfigChangeEvent>("configurate://change", (event) => {
+      if (
+        event.payload.targetId === this._changeTargetId &&
+        event.payload.operation === "external_change"
+      ) {
+        callback(event.payload);
+      }
+    });
     try {
       await invoke("plugin:configurate|watch_file", { payload });
     } catch (e) {
@@ -1029,9 +1123,7 @@ export class Configurate<S extends SchemaObject> {
     }
     return async () => {
       unlisten();
-      await invoke("plugin:configurate|unwatch_file", { payload }).catch(
-        () => {},
-      );
+      await invoke("plugin:configurate|unwatch_file", { payload }).catch(() => {});
     };
   }
 
@@ -1043,23 +1135,16 @@ export class Configurate<S extends SchemaObject> {
     const payload = this._buildPayload("delete", undefined, null, false);
 
     if (keyringOpts !== null && this._hasKeyringFields) {
-      let keyringEntries = this._keyringPaths.map(
-        ({ id, dotpath, isOptional }) => ({
-          id,
-          dotpath,
-          value: "",
-          ...(isOptional ? { isOptional: true } : {}),
-        }),
-      );
+      let keyringEntries = this._keyringPaths.map(({ id, dotpath, isOptional }) => ({
+        id,
+        dotpath,
+        value: "",
+        ...(isOptional ? { isOptional: true } : {}),
+      }));
 
       if (this._hasArrayKeyring) {
         try {
-          const loadPayload = this._buildPayload(
-            "load",
-            undefined,
-            null,
-            false,
-          );
+          const loadPayload = this._buildPayload("load", undefined, null, false);
           const plainData = await invoke<unknown>("plugin:configurate|load", {
             payload: loadPayload,
           });
@@ -1110,14 +1195,12 @@ export class Configurate<S extends SchemaObject> {
     }
 
     const existingIds = new Set(
-      collectKeyringReadEntries(this._schema, existingPlainData).map(
-        (entry) => entry.id,
-      ),
+      collectKeyringReadEntries(this._schema, existingPlainData).map((entry) => entry.id),
     );
     const nextIds = new Set(
-      (
-        (payload.keyringEntries as Array<{ id: string }> | undefined) ?? []
-      ).map((entry) => entry.id),
+      ((payload.keyringEntries as Array<{ id: string }> | undefined) ?? []).map(
+        (entry) => entry.id,
+      ),
     );
     const deleteIds = [...existingIds].filter((id) => !nextIds.has(id));
 
@@ -1165,6 +1248,7 @@ export class Configurate<S extends SchemaObject> {
       result = deepMergeDefaults(
         result,
         this._opts.defaults as Record<string, unknown>,
+        this._schema,
       );
     }
     return { result, didMigrate };
@@ -1197,20 +1281,17 @@ export class Configurate<S extends SchemaObject> {
   ): Promise<LockedConfig<S>> {
     if (op === "load") {
       const payload = this._buildPayload(op, data, keyringOpts, false);
-      const rawResult = await invoke<Record<string, unknown>>(
-        `plugin:configurate|${op}`,
-        {
-          payload,
-        },
-      );
-      const result = (await this._postProcessLoadedData(
-        rawResult,
-      )) as Record<string, unknown>;
+      const rawResult = await invoke<Record<string, unknown>>(`plugin:configurate|${op}`, {
+        payload,
+      });
+      const result = (await this._postProcessLoadedData(rawResult)) as Record<string, unknown>;
       this._validateLoadedData(result);
       return new LockedConfig(result as InferLocked<S>, this);
     }
 
-    const payload = this._buildPayload(op, data, keyringOpts, false, true);
+    // The locked result is built from the payload below, so ask Rust not to echo
+    // the data back (avoids sending a large document across IPC twice).
+    const payload = this._buildPayload(op, data, keyringOpts, false, false);
     await this._attachFullReplaceKeyringDeletes(payload, keyringOpts);
     await invoke(`plugin:configurate|${op}`, {
       payload,
@@ -1228,15 +1309,10 @@ export class Configurate<S extends SchemaObject> {
   ): Promise<UnlockedConfig<S>> {
     if (op === "load") {
       const payload = this._buildPayload("load", data, null, false);
-      const rawPlain = await invoke<Record<string, unknown>>(
-        "plugin:configurate|load",
-        {
-          payload,
-        },
-      );
-      const result = (await this._postProcessLoadedData(
-        rawPlain,
-      )) as Record<string, unknown>;
+      const rawPlain = await invoke<Record<string, unknown>>("plugin:configurate|load", {
+        payload,
+      });
+      const result = (await this._postProcessLoadedData(rawPlain)) as Record<string, unknown>;
       return this._unlockFromData(result, keyringOpts);
     }
 
@@ -1254,13 +1330,7 @@ export class Configurate<S extends SchemaObject> {
     keyringOpts: KeyringOptions | null,
     createIfMissing = false,
   ): Promise<PatchedConfig<S>> {
-    const payload = this._buildPayload(
-      "patch",
-      data,
-      keyringOpts,
-      false,
-      false,
-    );
+    const payload = this._buildPayload("patch", data, keyringOpts, false, false);
     if (createIfMissing) payload.createIfMissing = true;
     await invoke("plugin:configurate|patch", { payload });
     const plain = (payload.data ?? {}) as Partial<InferLocked<S>>;
@@ -1282,10 +1352,7 @@ export class Configurate<S extends SchemaObject> {
   }
 
   /** @internal */
-  async _unlockLoadedData(
-    data: unknown,
-    keyringOpts: KeyringOptions,
-  ): Promise<unknown> {
+  async _unlockLoadedData(data: unknown, keyringOpts: KeyringOptions): Promise<unknown> {
     this._validateLoadedData(data);
     if (!isPlainObject(data)) {
       return data;
@@ -1299,33 +1366,21 @@ export class Configurate<S extends SchemaObject> {
     if (!this._opts.validation.validateOnRead) {
       return;
     }
-    assertDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   private _validateWriteData(data: unknown): void {
     if (!this._opts.validation.validateOnWrite) {
       return;
     }
-    assertDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   private _validatePatchData(data: unknown): void {
     if (!this._opts.validation.validateOnWrite) {
       return;
     }
-    assertPartialDataMatchesSchema(
-      this._schema,
-      data,
-      this._opts.validation.allowUnknownKeys,
-    );
+    assertPartialDataMatchesSchema(this._schema, data, this._opts.validation.allowUnknownKeys);
   }
 
   /** @internal */
@@ -1363,7 +1418,7 @@ export class Configurate<S extends SchemaObject> {
     data: InferUnlocked<S>,
     keyringOpts: KeyringOptions | null,
   ): Promise<LockedConfig<S>> {
-    const payload = this._buildPayload("create", data, keyringOpts, false, true);
+    const payload = this._buildPayload("create", data, keyringOpts, false, false);
     await this._attachFullReplaceKeyringDeletes(payload, keyringOpts);
     // Use reset command instead of create.
     await invoke("plugin:configurate|reset", { payload });
@@ -1394,11 +1449,7 @@ export class Configurate<S extends SchemaObject> {
   ): Record<string, unknown> {
     const base: Record<string, unknown> = {
       ...this._buildBasePayload({
-        includeEncryptionKey:
-          op === "load" ||
-          op === "create" ||
-          op === "save" ||
-          op === "patch",
+        includeEncryptionKey: op === "load" || op === "create" || op === "save" || op === "patch",
       }),
       withUnlock,
       returnData,
@@ -1411,14 +1462,12 @@ export class Configurate<S extends SchemaObject> {
       (op === "patch" && data === undefined)
     ) {
       if (keyringOpts && this._keyringPaths.length > 0) {
-        base.keyringEntries = this._keyringPaths.map(
-          ({ id, dotpath, isOptional }) => ({
-            id,
-            dotpath,
-            value: "",
-            ...(isOptional ? { isOptional: true } : {}),
-          }),
-        );
+        base.keyringEntries = this._keyringPaths.map(({ id, dotpath, isOptional }) => ({
+          id,
+          dotpath,
+          value: "",
+          ...(isOptional ? { isOptional: true } : {}),
+        }));
         base.keyringOptions = keyringOpts;
       }
       return base;
@@ -1433,7 +1482,10 @@ export class Configurate<S extends SchemaObject> {
       // Work on a shallow copy to avoid mutating the caller's data object.
       let writeData = data;
       if (this._opts.version !== undefined && isPlainObject(data)) {
-        writeData = { ...(data as Record<string, unknown>), [CONFIGURATE_VERSION_KEY]: this._opts.version };
+        writeData = {
+          ...(data as Record<string, unknown>),
+          [CONFIGURATE_VERSION_KEY]: this._opts.version,
+        };
       }
       if (!this._hasKeyringFields) {
         // No keyring fields — skip the deep clone in separateSecrets.
@@ -1513,15 +1565,12 @@ export function configDiff(
 
   const entries: DiffEntry[] = [];
 
-  const allKeys = new Set([
-    ...Object.keys(oldData),
-    ...Object.keys(newData),
-  ]);
+  const allKeys = new Set([...Object.keys(oldData), ...Object.keys(newData)]);
 
   for (const key of allKeys) {
     const path = prefix ? `${prefix}.${key}` : key;
-    const inOld = key in oldData;
-    const inNew = key in newData;
+    const inOld = Object.hasOwn(oldData, key);
+    const inNew = Object.hasOwn(newData, key);
 
     if (!inOld && inNew) {
       entries.push({ path, type: "added", newValue: newData[key] });
@@ -1556,7 +1605,7 @@ function deepEqual(a: unknown, b: unknown, depth = 0): boolean {
   if (depth > MAX_DIFF_DEPTH) {
     throw new Error("configDiff: maximum nesting depth exceeded");
   }
-  if (a === b) return true;
+  if (Object.is(a, b)) return true;
   if (a === null || b === null) return false;
   if (typeof a !== typeof b) return false;
 
@@ -1570,6 +1619,7 @@ function deepEqual(a: unknown, b: unknown, depth = 0): boolean {
     const bObj = b as Record<string, unknown>;
     const keys = new Set([...Object.keys(aObj), ...Object.keys(bObj)]);
     for (const key of keys) {
+      if (!Object.hasOwn(aObj, key) || !Object.hasOwn(bObj, key)) return false;
       if (!deepEqual(aObj[key], bObj[key], depth + 1)) return false;
     }
     return true;

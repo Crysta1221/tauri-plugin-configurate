@@ -23,12 +23,13 @@ mod watcher;
 pub use config::{
     BaseDirPolicy, Builder, PluginConfig, PluginSettings, DEFAULT_MAX_READ_BYTES,
 };
+pub use commands::ConfigChangeEvent;
 pub use error::{Error, Result};
 
 #[cfg(desktop)]
-use desktop::Configurate;
+pub use desktop::Configurate;
 #[cfg(mobile)]
-use mobile::Configurate;
+pub use mobile::Configurate;
 
 /// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`]
 /// to access the configurate APIs.

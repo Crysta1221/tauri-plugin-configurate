@@ -26,7 +26,7 @@ function createProvider(payload: ProviderPayload): ConfigurateProvider {
 
 function isBinaryProvider(value: Record<string, unknown>): boolean {
   if (value.encryptionKey !== undefined && typeof value.encryptionKey !== "string") return false;
-  if (value.kdf !== undefined && typeof value.kdf !== "string") return false;
+  if (value.kdf !== undefined && value.kdf !== "sha256" && value.kdf !== "argon2") return false;
   return true;
 }
 

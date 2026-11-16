@@ -62,6 +62,9 @@ jobs:
       - name: Build JavaScript package
         run: bun run build
 
+      - name: Check built declarations
+        run: bun run check:dist
+
       - name: Publish to crates.io
         run: |
           VERSION="${{ steps.version.outputs.version }}"

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-16
+
+# 🚀 0.6.0 Release Notes
+
+Feature and dependency update release adding `json()`, `record()`, `oneOf()`, static `Configurate.list()`, `isNotFoundError()`, `preserve-order`, batch splitting over 128 entries, and `tsdown` builds.
+
+## ⚠️ Breaking Changes
+
+- Type-level only: `optional()` fields are now optional keys in `InferLocked` / `InferUnlocked`. Code that annotates such a key as required (`{ x: T | undefined }`) and assigns an inferred config type to it no longer compiles; make the key optional (`x?: T`). Runtime behavior and stored files are unchanged.
+
+## ✨ Features
+
+- The npm package is now built with tsdown instead of `tsc` plus Rollup. Runtime exports are unchanged. Declarations are bundled per entry (`index.d.ts`, `provider.d.ts`; the internal `configurate.d.ts`, `schema.d.ts` and `schema-utils.d.ts` are no longer emitted), and `exports` now gives CommonJS consumers their own `.d.cts` declarations.
+- `optional()` fields are now inferred as optional keys (`key?: T | undefined`) in `InferLocked` / `InferUnlocked` at every depth, so object literals for `create()`, `save()`, `defaults` and so on may omit them.
+- Added schema markers `json<T>()` (opaque JSON value), `record(schema)` (string-keyed map) and `oneOf("a", "b", ...)` (string literal union). They work with `optional()`, as array elements, with `patch()` and `defaults` (which fill `json()` / `record()` only as a whole), and are validated by `validateOnWrite` / `validateOnRead`. Keyring fields inside `record()` are rejected by `defineConfig()`.
+- Added static `Configurate.list({ baseDir, provider, options })` to list config files in a directory without a `Configurate` instance. It uses the existing `list_configs` command, which now accepts a payload without `fileName`, so it needs the 0.6.0 Rust crate: crate 0.5.2 rejects the call with `missing fileName`.
+- Exported `isNotFoundError()` and the `ConfigurateError`, `ConfigurateErrorKind` and `ConfigurateIoErrorKind` types. `BatchRunEntryResult` errors are now typed as `ConfigurateError` (`kind` is a union of the known kinds that still accepts any string).
+- `Configurate.loadAll()` / `saveAll()` / `patchAll()` accept more than 128 entries: the guest splits the list into consecutive calls of at most 128 entries (the per-call limit in Rust is unchanged) and merges the results. When a split batch has a failed call, its ids are reported as failed entries (kind `batch_call_failed` unless the error is structured) instead of discarding the other calls' results.
+- Added the opt-in `preserve-order` Cargo feature to write object keys in insertion order instead of alphabetically.
+- Documented the per-command `configurate:allow-*` permissions, `defaults` merge rules, the error shape, and that `save()` creates missing parent directories and `delete()` succeeds when the file is absent.
+- Updated `toml` to 1.x. Existing TOML files are read unchanged; a file rewritten by this version may be laid out differently (arrays of tables after tables, fewer escapes in multi-line strings).
+
+## 🐛 Fixes
+
+- `create()` / `save()` / `reset()` with `.run()` no longer ask Rust to send the written data back over IPC; the returned `LockedConfig` was already built from the data passed in.
+- Fixed `keyring(String | Number | Boolean, ...)` inferring boxed wrapper types instead of primitives, added compile-time duplicate keyring ID checking inside schema arrays (`CollectKeyringIds`), and fixed `Configurate.reset()`'s return type to `LazyResetEntry<S>`.
+- Fixed stale keyring entry deletion when saving/resetting configs with no active keyring writes, returning written keyring values from `.unlock()` on `create()` / `save()` / `reset()` / `patch()`, validating keyring payloads before deleting files in `execute_delete`, and skipping `undefined`/`null` optional keyring writes instead of storing `"null"`.
+- Tightened `isPlainObject`, schema array validation, `assertPartialSchemaObject`, `deepMergeDefaults` cloning, `isBinaryProvider` KDF validation, and split-batch error merging when preflight failures reduce a batch to 128 or fewer entries; exported `Configurate` and `ConfigChangeEvent` from the Rust crate root.
+
+## 📦 Install
+
+```toml
+tauri-plugin-configurate = "0.6.0"
+```
+
+```sh
+npm add tauri-plugin-configurate-api@0.6.0
+```
+
 ## [0.5.2] - 2026-06-18
 
 # 🚀 0.5.2 Release Notes
@@ -99,7 +138,8 @@ tauri-plugin-configurate = "0.5.0"
 npm add tauri-plugin-configurate-api@0.5.0
 ```
 
-[Unreleased]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Crysta1221/tauri-plugin-configurate/compare/v0.4.2...v0.5.0

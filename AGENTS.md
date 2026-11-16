@@ -4,10 +4,14 @@ Desktop only (Linux / Windows / macOS). Android and iOS are not supported.
 
 ## Tooling
 
-| Location | Package manager |
-| --- | --- |
-| Repository root | `bun` (`bun.lock`) |
+| Location             | Package manager           |
+| -------------------- | ------------------------- |
+| Repository root      | `bun` (`bun.lock`)        |
 | `examples/tauri-app` | `pnpm` (`pnpm-lock.yaml`) |
+
+## npm build
+
+`bun run build` runs tsdown (`tsdown.config.ts`): `guest-js/index.ts` and `guest-js/provider.ts` become `dist-js/{index,provider}.{js,cjs,d.ts,d.cts}`, with declarations bundled per entry. `package.json` `exports` is written by hand and must match those file names. `bun run check:dist` type-checks `scripts/consumer/consumer.ts` against the built declarations (import and require, `node16` and `bundler`); run it after `build` whenever exports change.
 
 ## Commands & permissions
 
@@ -27,7 +31,7 @@ When adding or removing a command, keep these in sync:
 - **Change events**: keep `configurate://change` aligned between `src/commands.rs` (`ConfigChangeEvent`, `change_target_id`) and `guest-js/configurate.ts` (`ConfigChangeEvent`, `buildChangeTargetId`).
 - **Keyring reads**: `keyring_pair` with `KeyringEntryUse::Read` rejects non-empty `value`; writes use `KeyringEntryUse::Write`. Keyring unlock goes only through the `unlock` command — `load` rejects `withUnlock` + keyring fields.
 - **Dotpath limits** (`src/dotpath.rs`): max 64 segments, array index ≤ 10,000.
-- **Batch limit**: max 128 entries per `*_all` command.
+- **Batch limit**: max 128 entries per `*_all` IPC call (`MAX_BATCH_ENTRIES` in `src/commands.rs`, mirrored in `guest-js/configurate.ts`). It bounds the work and response size of one call. `loadAll` / `saveAll` / `patchAll` accept any number of entries: the guest validates ids (non-empty, unique) over the whole list, then sends consecutive calls of at most 128 entries, one after another (never in parallel), and merges the per-id results. A list that fits in one call rejects when the call fails; a split list reports a failed call's ids as failed entries (kind `batch_call_failed` unless the rejection is a structured error).
 - **Read size limit**: default `DEFAULT_MAX_READ_BYTES` (16 MiB) in `src/config.rs`; override via `Builder::max_read_bytes` or `tauri.conf.json` → `plugins.configurate.maxReadBytes`.
 - **Binary `encryptionKey`**: include in IPC only when the operation reads/writes encrypted data (`guest-js/configurate.ts` `_serializeProvider`). SHA-256 KDF is for high-entropy keys; document Argon2 for passwords (`guest-js/provider.ts`).
 - **`BaseDirectory` allowlist**: default app-scoped dirs only (`src/config.rs`); validate in `resolve_root`. Opt out via `Builder::allow_any_base_directory`.
@@ -51,15 +55,19 @@ Each version block uses Keep a Changelog version headers plus release-note secti
 One-line summary of the release.
 
 ## ⚠️ Breaking Changes
+
 - Use backticks for `types`, `functions()`, and file names.
 
 ## ✨ Features
+
 - New behavior and enhancements.
 
 ## 🐛 Fixes
+
 - Bug fixes (omit section if none).
 
 ## 🔒 Security
+
 - Security hardening (omit section if none).
 ```
 
@@ -76,10 +84,10 @@ Pushing a `v*` tag runs `.github/workflows/release.yml`: verify versions → tes
 
 ### Publishing credentials
 
-| Target | Method |
-| --- | --- |
-| crates.io | GitHub Secret `CARGO_REGISTRY_TOKEN` |
-| npm | [Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC; no `NPM_TOKEN`) |
+| Target    | Method                                                                                  |
+| --------- | --------------------------------------------------------------------------------------- |
+| crates.io | GitHub Secret `CARGO_REGISTRY_TOKEN`                                                    |
+| npm       | [Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC; no `NPM_TOKEN`) |
 
 npm Trusted Publisher on npmjs.com must match this repo (`Crysta1221/tauri-plugin-configurate`) and workflow filename `release.yml`. The workflow sets `id-token: write` for OIDC.
 
