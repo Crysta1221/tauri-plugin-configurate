@@ -2737,6 +2737,68 @@ describe("Batch chunking", () => {
     expect(result.results.e299).toEqual({ ok: true, data: { theme: "e299" } });
   });
 
+  it("keeps a '__proto__' id as an own result key in split batches and preflight failures", async () => {
+    const { Configurate, JsonProvider, defineConfig } = await loadApi(async (_command, args) => ({
+      results: Object.fromEntries(
+        (args as BatchArgs).payload.entries.map((e) => [e.id, { ok: true, data: { theme: e.id } }]),
+      ),
+    }));
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    const loaded = await Configurate.loadAll(
+      [...ids(200), "__proto__"].map((id) => ({ id, config })),
+    ).run();
+    expect(Object.keys(loaded.results)).toHaveLength(201);
+    expect(Object.hasOwn(loaded.results, "__proto__")).toBe(true);
+    expect(loaded.results["__proto__"]).toEqual({ ok: true, data: { theme: "__proto__" } });
+
+    const checked = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+      validation: { validateOnWrite: true },
+    });
+    const saved = await Configurate.saveAll([
+      { id: "ok", config: checked, data: { theme: "ok" } },
+      { id: "__proto__", config: checked, data: { theme: 1 as never } },
+    ]).run();
+    expect(Object.hasOwn(saved.results, "__proto__")).toBe(true);
+    expect(saved.results["__proto__"]?.ok).toBe(false);
+  });
+
+  it("sends the entries validated at construction even if the caller's array changes later", async () => {
+    const { Configurate, JsonProvider, defineConfig, invokeMock } = await loadApi(
+      async (_command, args) => ({
+        results: Object.fromEntries(
+          (args as BatchArgs).payload.entries.map((e) => [e.id, { ok: true, data: null }]),
+        ),
+      }),
+    );
+    const config = new Configurate({
+      schema: defineConfig({ theme: String }),
+      fileName: "s.json",
+      baseDir: 13 as never,
+      provider: JsonProvider(),
+    });
+
+    const entries = ids(200).map((id) => ({ id, config, data: { theme: id } }));
+    const builder = Configurate.saveAll(entries);
+    entries.push({ id: "e0", config, data: { theme: "dup" } });
+    entries[1].id = "e0";
+    await builder.run();
+
+    const sent = batchCalls(invokeMock, "plugin:configurate|save_all").flatMap(([, a]) =>
+      a.payload.entries.map((e) => e.id),
+    );
+    expect(sent).toEqual(ids(200));
+  });
+
   it("exactly 128 entries still use one call", async () => {
     const { Configurate, JsonProvider, defineConfig, invokeMock } = await loadApi(
       async (_command, args) => ({

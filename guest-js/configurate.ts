@@ -360,6 +360,12 @@ type BatchPayloadEntry = { id: string; payload: Record<string, unknown> };
  * results; each id of that call is reported as failed with the call's error
  * (`batch_call_failed` when the rejection is not a `ConfigurateError`).
  */
+// Ids are caller-chosen strings, so an id such as "__proto__" must land as an own key, not hit
+// Object.prototype's setter when results are assigned or merged.
+function emptyResults(): Record<string, BatchRunEntryResult> {
+  return Object.create(null) as Record<string, BatchRunEntryResult>;
+}
+
 async function invokeBatch(
   command: string,
   entries: BatchPayloadEntry[],
@@ -369,7 +375,7 @@ async function invokeBatch(
     const result = await invoke<BatchRunResult>(command, { payload: { entries } });
     return result.results;
   }
-  const results: Record<string, BatchRunEntryResult> = {};
+  const results = emptyResults();
   for (let start = 0; start < entries.length; start += MAX_BATCH_ENTRIES) {
     const chunk = entries.slice(start, start + MAX_BATCH_ENTRIES);
     try {
@@ -594,7 +600,8 @@ class LoadAllBuilder {
     for (const entry of entries) {
       assertNonEmptyId(this._idSet, entry.id);
     }
-    this._entries = entries;
+    // Copy the entries so the ids validated here are the ids run() sends.
+    this._entries = entries.map((entry) => ({ ...entry }));
   }
 
   unlock(id: string, opts: KeyringOptions): this {
@@ -699,7 +706,8 @@ class SaveAllBuilder {
     for (const entry of entries) {
       assertNonEmptyId(this._idSet, entry.id);
     }
-    this._entries = entries;
+    // Copy the entries so the ids validated here are the ids run() sends.
+    this._entries = entries.map((entry) => ({ ...entry }));
   }
 
   lock(id: string, opts: KeyringOptions): this {
@@ -722,7 +730,7 @@ class SaveAllBuilder {
       id: string;
       payload: Record<string, unknown>;
     }> = [];
-    const preflightResults: Record<string, BatchRunEntryResult> = {};
+    const preflightResults = emptyResults();
 
     for (const entry of this._entries) {
       const lockOpts = this._lockById.get(entry.id) ?? this._lockAll;
@@ -751,10 +759,7 @@ class SaveAllBuilder {
       this._entries.length > MAX_BATCH_ENTRIES,
     );
     return {
-      results: {
-        ...backendResults,
-        ...preflightResults,
-      },
+      results: Object.assign(emptyResults(), backendResults, preflightResults),
     };
   }
 }
@@ -784,7 +789,8 @@ class PatchAllBuilder {
     for (const entry of entries) {
       assertNonEmptyId(this._idSet, entry.id);
     }
-    this._entries = entries;
+    // Copy the entries so the ids validated here are the ids run() sends.
+    this._entries = entries.map((entry) => ({ ...entry }));
   }
 
   lock(id: string, opts: KeyringOptions): this {
@@ -807,7 +813,7 @@ class PatchAllBuilder {
       id: string;
       payload: Record<string, unknown>;
     }> = [];
-    const preflightResults: Record<string, BatchRunEntryResult> = {};
+    const preflightResults = emptyResults();
 
     for (const entry of this._entries) {
       const lockOpts = this._lockById.get(entry.id) ?? this._lockAll;
@@ -834,10 +840,7 @@ class PatchAllBuilder {
       this._entries.length > MAX_BATCH_ENTRIES,
     );
     return {
-      results: {
-        ...backendResults,
-        ...preflightResults,
-      },
+      results: Object.assign(emptyResults(), backendResults, preflightResults),
     };
   }
 }
