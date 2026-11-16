@@ -13,7 +13,7 @@ export default defineConfig({
 
   resolve: {
     // Point 'tauri-plugin-configurate-api' directly at the TypeScript source.
-    // This avoids the need to run `rollup -c` before every `tauri dev` session
+    // This avoids the need to run `bun run build` before every `tauri dev` session
     // and prevents stale pnpm / Vite pre-bundle cache issues that would
     // otherwise surface as "_keyringBrand is not defined" errors.
     alias: [

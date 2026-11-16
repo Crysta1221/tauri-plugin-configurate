@@ -9,6 +9,10 @@ Desktop only (Linux / Windows / macOS). Android and iOS are not supported.
 | Repository root      | `bun` (`bun.lock`)        |
 | `examples/tauri-app` | `pnpm` (`pnpm-lock.yaml`) |
 
+## npm build
+
+`bun run build` runs tsdown (`tsdown.config.ts`): `guest-js/index.ts` and `guest-js/provider.ts` become `dist-js/{index,provider}.{js,cjs,d.ts,d.cts}`, with declarations bundled per entry. `package.json` `exports` is written by hand and must match those file names. `bun run check:dist` type-checks `scripts/consumer/consumer.ts` against the built declarations (import and require, `node16` and `bundler`); run it after `build` whenever exports change.
+
 ## Commands & permissions
 
 When adding or removing a command, keep these in sync:

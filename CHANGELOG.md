@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## ✨ Features
 
+- The npm package is now built with tsdown instead of `tsc` plus Rollup. Runtime exports are unchanged. Declarations are bundled per entry (`index.d.ts`, `provider.d.ts`; the internal `configurate.d.ts`, `schema.d.ts` and `schema-utils.d.ts` are no longer emitted), and `exports` now gives CommonJS consumers their own `.d.cts` declarations.
 - `optional()` fields are now inferred as optional keys (`key?: T | undefined`) in `InferLocked` / `InferUnlocked` at every depth, so object literals for `create()`, `save()`, `defaults` and so on may omit them.
 - Added schema markers `json<T>()` (opaque JSON value), `record(schema)` (string-keyed map) and `oneOf("a", "b", ...)` (string literal union). They work with `optional()`, as array elements, with `patch()` and `defaults` (which fill `json()` / `record()` only as a whole), and are validated by `validateOnWrite` / `validateOnRead`. Keyring fields inside `record()` are rejected by `defineConfig()`.
 - Added static `Configurate.list({ baseDir, provider, options })` to list config files in a directory without a `Configurate` instance. It uses the existing `list_configs` command, which now accepts a payload without `fileName`.
@@ -25,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 🐛 Fixes
 
 - `create()` / `save()` / `reset()` with `.run()` no longer ask Rust to send the written data back over IPC; the returned `LockedConfig` was already built from the data passed in.
+- Fixed `keyring(String | Number | Boolean, ...)` inferring boxed wrapper types instead of primitives, added compile-time duplicate keyring ID checking inside schema arrays (`CollectKeyringIds`), and fixed `Configurate.reset()`'s return type to `LazyResetEntry<S>`.
+- Fixed stale keyring entry deletion when saving/resetting configs with no active keyring writes, returning written keyring values from `.unlock()` on `create()` / `save()` / `reset()` / `patch()`, validating keyring payloads before deleting files in `execute_delete`, and skipping `undefined`/`null` optional keyring writes instead of storing `"null"`.
+- Tightened `isPlainObject`, schema array validation, `assertPartialSchemaObject`, `deepMergeDefaults` cloning, `isBinaryProvider` KDF validation, and split-batch error merging when preflight failures reduce a batch to 128 or fewer entries; exported `Configurate` and `ConfigChangeEvent` from the Rust crate root.
 
 ## [0.5.2] - 2026-06-18
 

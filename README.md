@@ -177,7 +177,7 @@ Use `kdf: "argon2"` when `encryptionKey` is a user password. The default SHA-256
 - **Base directories:** By default, IPC payloads may only use app-scoped `BaseDirectory` values (`AppConfig`, `AppData`, `AppLocalData`, `AppCache`, `AppLog`, `Resource`, `Temp`). To allow `Home`, `Desktop`, etc., configure the Rust builder:
 
 ```rust
-.use(
+.plugin(
     tauri_plugin_configurate::Builder::default()
         .allowed_base_directories([
             tauri::path::BaseDirectory::AppConfig,
