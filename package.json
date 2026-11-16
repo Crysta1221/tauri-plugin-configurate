@@ -30,19 +30,30 @@
   "types": "./dist-js/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist-js/index.d.ts",
-      "import": "./dist-js/index.js",
-      "require": "./dist-js/index.cjs"
+      "import": {
+        "types": "./dist-js/index.d.ts",
+        "default": "./dist-js/index.js"
+      },
+      "require": {
+        "types": "./dist-js/index.d.cts",
+        "default": "./dist-js/index.cjs"
+      }
     },
     "./provider": {
-      "types": "./dist-js/provider.d.ts",
-      "import": "./dist-js/provider.js",
-      "require": "./dist-js/provider.cjs"
+      "import": {
+        "types": "./dist-js/provider.d.ts",
+        "default": "./dist-js/provider.js"
+      },
+      "require": {
+        "types": "./dist-js/provider.d.cts",
+        "default": "./dist-js/provider.cjs"
+      }
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && rollup -c",
+    "build": "tsdown",
     "build:sync": "bun run build && cd examples/tauri-app && pnpm install",
+    "check:dist": "node scripts/check-dist-types.mjs",
     "prepublishOnly": "bun run build",
     "pretest": "bun run build",
     "test": "bun test guest-js/*.test.ts",
@@ -57,7 +68,7 @@
     "oxfmt": "^0.78.0",
     "oxlint": "^1.93.0",
     "oxlint-tsgolint": "^7.0.2007",
-    "rollup": "^4.68.3",
+    "tsdown": "^0.23.7",
     "typescript": "^7.0.2"
   },
   "peerDependencies": {

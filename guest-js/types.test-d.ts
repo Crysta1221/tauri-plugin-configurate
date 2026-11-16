@@ -1,6 +1,6 @@
 // Compile-time assertions for the public types. Checked by
-// `bunx tsc -p tsconfig.json`; never imported or executed, and excluded from
-// the npm build (`tsconfig.build.json`).
+// `bunx tsc -p tsconfig.json`; never imported or executed, so the npm build
+// (tsdown, which emits only what the entries import) leaves it out.
 
 import { defineConfig, json, keyring, oneOf, optional, record } from "./schema";
 import type { CollectKeyringIds, InferLocked, InferUnlocked, SchemaObject } from "./schema";
